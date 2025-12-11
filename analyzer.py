@@ -46,14 +46,34 @@ class ChatAnalyzer:
         self.cleaned_texts = []  # 缓存清洗后的文本
         self._build_mappings()
 
+    def _is_bot_message(self, msg):
+        """判断是否为机器人消息（基于 subMsgType）"""
+        if not FILTER_BOT_MESSAGES:
+            return False
+        
+        raw_msg = msg.get('rawMessage', {})
+        sub_msg_type = raw_msg.get('subMsgType', 0)
+        return sub_msg_type in [577, 65]
+
     def _build_mappings(self):
+        """构建 uin 到 name 的映射，优先保留有效的 name"""
         for msg in self.messages:
+            # 跳过机器人消息
+            if self._is_bot_message(msg):
+                continue
+            
             sender = msg.get('sender', {})
             uin = sender.get('uin')
-            name = sender.get('name')
+            name = sender.get('name', '').strip()  # 去除首尾空白
             msg_id = msg.get('messageId')
+            
+            # 只有当 name 非空时才更新映射
+            # 如果该 uin 已有映射，只在当前 name 更长或原映射为空时才覆盖
             if uin and name:
-                self.uin_to_name[uin] = name
+                existing_name = self.uin_to_name.get(uin, '')
+                if not existing_name or len(name) > len(existing_name):
+                    self.uin_to_name[uin] = name
+            
             if msg_id and uin:
                 self.msgid_to_sender[msg_id] = uin
 
@@ -91,7 +111,13 @@ class ChatAnalyzer:
     def _preprocess_texts(self):
         """预处理所有文本"""
         skipped = 0
+        bot_filtered = 0
         for msg in self.messages:
+            # 跳过机器人消息
+            if self._is_bot_message(msg):
+                bot_filtered += 1
+                continue
+            
             content = msg.get('content', {})
             text = content.get('text', '') if isinstance(content, dict) else ''
             cleaned = clean_text(text)
@@ -99,7 +125,11 @@ class ChatAnalyzer:
                 self.cleaned_texts.append(cleaned)
             elif text:
                 skipped += 1
-        print(f"   有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条")
+        
+        if FILTER_BOT_MESSAGES and bot_filtered > 0:
+            print(f"   有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条, 过滤机器人: {bot_filtered} 条")
+        else:
+            print(f"   有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条")
 
     def _discover_new_words(self):
         """新词发现"""
@@ -210,6 +240,10 @@ class ChatAnalyzer:
     def _tokenize_and_count(self):
         """分词统计"""
         for idx, msg in enumerate(self.messages):
+            # 跳过机器人消息
+            if self._is_bot_message(msg):
+                continue
+            
             sender_uin = msg.get('sender', {}).get('uin')
             content = msg.get('content', {})
             text = content.get('text', '') if isinstance(content, dict) else ''
@@ -245,6 +279,10 @@ class ChatAnalyzer:
         prev_sender = None
         
         for msg in self.messages:
+            # 跳过机器人消息
+            if self._is_bot_message(msg):
+                continue
+            
             sender_uin = msg.get('sender', {}).get('uin')
             if not sender_uin:
                 continue
