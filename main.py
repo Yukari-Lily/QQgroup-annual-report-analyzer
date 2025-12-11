@@ -21,7 +21,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config as cfg
-from utils import load_json
+from utils import load_json, sanitize_filename
 from analyzer import ChatAnalyzer
 from report_generator import ReportGenerator
 from image_generator import ImageGenerator
@@ -62,9 +62,10 @@ def main():
     reporter.generate_file_report()
 
     json_data = analyzer.export_json()
+    safe_name = sanitize_filename(analyzer.chat_name)
     json_path = os.path.join(
         os.path.dirname(os.path.abspath(cfg.INPUT_FILE)),
-        f"{analyzer.chat_name.replace('/', '_').replace(chr(92), '_')}_分析结果.json"
+        f"{safe_name}_分析结果.json"
     )
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(json_data, f, ensure_ascii=False, indent=2)
@@ -79,11 +80,12 @@ def main():
         print("\n选择生成模式:")
         print("  1. 交互式选择热词 (推荐)")
         print("  2. 自动选择前10个热词")
-        print("  3. 跳过")
+        print("  3. AI智能选词")
+        print("  4. 跳过")
         
-        choice = input("\n请选择 [1/2/3]: ").strip()
+        choice = input("\n请选择 [1/2/3/4]: ").strip()
         
-        if choice == '3':
+        if choice == '4':
             print("⏭️ 跳过可视化报告生成")
         else:
             img_gen = ImageGenerator(analyzer)

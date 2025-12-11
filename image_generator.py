@@ -7,6 +7,7 @@ import math
 import asyncio
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import config as cfg
+from utils import sanitize_filename
 
 
 # 每个词独立的贡献者颜色
@@ -643,7 +644,7 @@ class ImageGenerator:
         data = self._prepare_template_data()
         html_content = template.render(**data)
         
-        safe_name = self.json_data.get('chatName', '未知').replace('/', '_').replace('\\', '_')
+        safe_name = sanitize_filename(self.json_data.get('chatName', '未知'))
         html_path = os.path.join(self.output_dir, f"{safe_name}_年度热词报告.html")
         
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -680,7 +681,7 @@ class ImageGenerator:
     
     def html_to_image(self, html_path):
         """转图片"""
-        safe_name = self.json_data.get('chatName', '未知').replace('/', '_').replace('\\', '_')
+        safe_name = sanitize_filename(self.json_data.get('chatName', '未知'))
         output_path = os.path.join(self.output_dir, f"{safe_name}_年度热词报告.png")
         
         print("🖼️ 转换为图片...")

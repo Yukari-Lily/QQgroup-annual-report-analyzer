@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 import config as cfg
-from utils import generate_time_bar
+from utils import generate_time_bar, sanitize_filename
 
 
 class ReportGenerator:
@@ -72,7 +72,7 @@ class ReportGenerator:
             input_dir = self.output_dir
         else:
             input_dir = os.path.dirname(os.path.abspath(cfg.INPUT_FILE))
-        safe_name = self.chat_name.replace('/', '_').replace('\\', '_')
+        safe_name = sanitize_filename(self.chat_name)
         output_file = os.path.join(input_dir, f"{safe_name}_年度热词报告.txt")
         
         lines = []

@@ -97,6 +97,31 @@ def generate_time_bar(hour_counts, width=20):
         lines.append(f"  {hour:02d}:00 {bar} {count:>5} ({percentage:>4.1f}%)")
     return lines
 
+def sanitize_filename(filename):
+    """
+    清理文件名中的非法字符
+    Windows文件名不允许的字符: < > : " / \\ | ? *
+    保留原始字符用于显示，仅在文件名中替换
+    """
+    if not filename:
+        return "未命名"
+    
+    # 替换Windows非法字符为下划线
+    illegal_chars = '<>:"/\\|?*'
+    sanitized = filename
+    for char in illegal_chars:
+        sanitized = sanitized.replace(char, '_')
+    
+    # 去除首尾空格和点号（Windows不允许）
+    sanitized = sanitized.strip('. ')
+    
+    # 如果清理后为空，返回默认名称
+    if not sanitized:
+        return "未命名"
+    
+    return sanitized
+
+
 def analyze_single_chars(texts):
     """分析单字的独立出现情况 - 来自旧版"""
     total_count = Counter()
