@@ -33,6 +33,7 @@ import analyzer as analyzer_mod
 from image_generator import ImageGenerator
 
 from backend.db_service import DatabaseService
+from backend.json_storage import JSONStorageService
 
 
 app = Flask(__name__)
@@ -51,13 +52,27 @@ max_size_mb = int(os.getenv('MAX_UPLOAD_SIZE_MB', '50'))
 app.config['MAX_CONTENT_LENGTH'] = max_size_mb * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-please-change')
 
-# 初始化服务
-try:
-    db_service = DatabaseService()
-    db_service.init_database()
-except Exception as e:
-    print(f"⚠️  服务初始化警告: {e}")
-    db_service = None
+# 初始化存储服务（根据配置选择 MySQL 或 JSON）
+storage_mode = os.getenv('STORAGE_MODE', 'json').lower()  # 默认使用 json 存储
+
+if storage_mode == 'mysql':
+    try:
+        print("📦 使用 MySQL 数据库存储")
+        db_service = DatabaseService()
+        db_service.init_database()
+    except Exception as e:
+        print(f"⚠️  MySQL 初始化失败: {e}")
+        print("🔄 回退到 JSON 文件存储")
+        db_service = JSONStorageService()
+        db_service.init_database()
+else:
+    try:
+        print("📦 使用 JSON 文件存储（本地模式）")
+        db_service = JSONStorageService()
+        db_service.init_database()
+    except Exception as e:
+        print(f"❌ 存储服务初始化失败: {e}")
+        db_service = None
 
 
 def generate_ai_comments(selected_word_objects: List[Dict]) -> Dict[str, str]:

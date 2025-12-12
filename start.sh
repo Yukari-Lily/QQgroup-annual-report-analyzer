@@ -37,12 +37,15 @@ if [ ! -f "backend/.env" ]; then
     echo -e "${YELLOW}⚠️  未找到backend/.env，从示例文件创建...${NC}"
     cp backend/.env.example backend/.env
     echo ""
-    echo -e "${YELLOW}⚠️  重要：请编辑 backend/.env 文件配置MySQL数据库信息！${NC}"
-    echo "   - MYSQL_HOST（默认：localhost）"
-    echo "   - MYSQL_PORT（默认：3306）"
-    echo "   - MYSQL_USER（默认：root）"
-    echo "   - MYSQL_PASSWORD（必须设置！）"
-    echo "   - MYSQL_DATABASE（默认：qq_reports）"
+    echo -e "${GREEN}✅ 已创建配置文件（默认使用JSON文件存储）${NC}"
+    echo ""
+    echo "💡 存储模式说明："
+    echo "   - JSON模式（默认）：无需MySQL，数据存储在 runtime_outputs/reports_db/"
+    echo "   - MySQL模式：适合多用户环境，需要配置数据库"
+    echo ""
+    echo "如需使用MySQL，请编辑 backend/.env 设置："
+    echo "   STORAGE_MODE=mysql"
+    echo "   MYSQL_PASSWORD=your_password"
     echo ""
     read -p "是否现在编辑配置文件？(y/n) " -n 1 -r
     echo ""
@@ -50,7 +53,7 @@ if [ ! -f "backend/.env" ]; then
         ${EDITOR:-nano} backend/.env
     fi
 fi
-echo -e "${GREEN}✅ 配置文件已存在${NC}"
+echo -e "${GREEN}✅ 配置文件已就绪${NC}"
 
 # 安装Python依赖
 echo ""
@@ -84,26 +87,37 @@ fi
 cd ..
 echo -e "${GREEN}✅ 前端依赖安装完成${NC}"
 
-# 初始化数据库
+# 检查存储模式并初始化
 echo ""
-echo "[6/8] 初始化数据库..."
-echo -e "${YELLOW}⚠️  请确保MySQL服务已启动！${NC}"
-read -p "按Enter键继续初始化数据库，或Ctrl+C取消..."
-python3 backend/init_db.py
-if [ $? -ne 0 ]; then
-    echo ""
-    echo -e "${YELLOW}⚠️  数据库初始化失败！请检查：${NC}"
-    echo "   1. MySQL服务是否已启动"
-    echo "   2. backend/.env 中的数据库配置是否正确"
-    echo "   3. MySQL用户是否有创建数据库的权限"
-    echo ""
-    read -p "是否继续启动服务？(y/n) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+echo "[6/8] 初始化存储..."
+STORAGE_MODE=$(grep "^STORAGE_MODE=" backend/.env 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
+if [ -z "$STORAGE_MODE" ]; then
+    STORAGE_MODE="json"
+fi
+
+if [ "$STORAGE_MODE" = "mysql" ]; then
+    echo -e "${YELLOW}检测到MySQL存储模式${NC}"
+    echo -e "${YELLOW}⚠️  请确保MySQL服务已启动！${NC}"
+    read -p "按Enter键继续初始化MySQL数据库，或Ctrl+C取消..."
+    python3 backend/init_db.py
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  MySQL初始化失败！${NC}"
+        echo "   系统将自动回退到JSON文件存储模式"
+        echo "   如需使用MySQL，请检查："
+        echo "   1. MySQL服务是否已启动"
+        echo "   2. backend/.env 中的数据库配置是否正确"
+        echo "   3. MySQL用户是否有创建数据库的权限"
+        echo ""
+        sed -i 's/STORAGE_MODE=mysql/STORAGE_MODE=json/' backend/.env 2>/dev/null || \
+        sed -i '' 's/STORAGE_MODE=mysql/STORAGE_MODE=json/' backend/.env 2>/dev/null
+        echo -e "${GREEN}✅ 已切换到JSON存储模式${NC}"
+    else
+        echo -e "${GREEN}✅ MySQL数据库初始化完成${NC}"
     fi
 else
-    echo -e "${GREEN}✅ 数据库初始化完成${NC}"
+    echo -e "${GREEN}✅ 使用JSON文件存储（无需数据库）${NC}"
+    echo "   数据将保存在：runtime_outputs/reports_db/"
 fi
 
 # 启动后端

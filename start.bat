@@ -33,12 +33,15 @@ if not exist "backend\.env" (
     echo ⚠️  未找到backend\.env，从示例文件创建...
     copy "backend\.env.example" "backend\.env" >nul
     echo.
-    echo ⚠️  重要：请编辑 backend\.env 文件配置MySQL数据库信息！
-    echo    - MYSQL_HOST（默认：localhost）
-    echo    - MYSQL_PORT（默认：3306）
-    echo    - MYSQL_USER（默认：root）
-    echo    - MYSQL_PASSWORD（必须设置！）
-    echo    - MYSQL_DATABASE（默认：qq_reports）
+    echo ✅ 已创建配置文件（默认使用JSON文件存储）
+    echo.
+    echo 💡 存储模式说明：
+    echo    - JSON模式（默认）：无需MySQL，数据存储在 runtime_outputs\reports_db\
+    echo    - MySQL模式：适合多用户环境，需要配置数据库
+    echo.
+    echo 如需使用MySQL，请编辑 backend\.env 设置：
+    echo    STORAGE_MODE=mysql
+    echo    MYSQL_PASSWORD=your_password
     echo.
     echo 是否现在编辑配置文件？(Y/N)
     set /p edit_config=
@@ -46,7 +49,7 @@ if not exist "backend\.env" (
         notepad "backend\.env"
     )
 )
-echo ✅ 配置文件已存在
+echo ✅ 配置文件已就绪
 
 :: 安装Python依赖
 echo.
@@ -81,28 +84,33 @@ if not exist "node_modules" (
 cd ..
 echo ✅ 前端依赖安装完成
 
-:: 初始化数据库
+:: 检查存储模式并初始化
 echo.
-echo [6/8] 初始化数据库...
-echo ⚠️  请确保MySQL服务已启动！
-echo 按任意键继续初始化数据库，或Ctrl+C取消...
-pause >nul
-python backend\init_db.py
+echo [6/8] 初始化存储...
+findstr /C:"STORAGE_MODE=mysql" backend\.env >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo ⚠️  数据库初始化失败！请检查：
-    echo    1. MySQL服务是否已启动
-    echo    2. backend\.env 中的数据库配置是否正确
-    echo    3. MySQL用户是否有创建数据库的权限
-    echo.
-    echo 是否继续启动服务？(Y/N)
-    set /p continue=
-    if /i not "%continue%"=="Y" (
-        pause
-        exit /b 1
-    )
+    echo ✅ 使用JSON文件存储（无需数据库）
+    echo    数据将保存在：runtime_outputs\reports_db\
 ) else (
-    echo ✅ 数据库初始化完成
+    echo 检测到MySQL存储模式
+    echo ⚠️  请确保MySQL服务已启动！
+    echo 按任意键继续初始化MySQL数据库，或Ctrl+C取消...
+    pause >nul
+    python backend\init_db.py
+    if errorlevel 1 (
+        echo.
+        echo ⚠️  MySQL初始化失败！
+        echo    系统将自动回退到JSON文件存储模式
+        echo    如需使用MySQL，请检查：
+        echo    1. MySQL服务是否已启动
+        echo    2. backend\.env 中的数据库配置是否正确
+        echo    3. MySQL用户是否有创建数据库的权限
+        echo.
+        powershell -Command "(gc backend\.env) -replace 'STORAGE_MODE=mysql', 'STORAGE_MODE=json' | Out-File -encoding ASCII backend\.env"
+        echo ✅ 已切换到JSON存储模式
+    ) else (
+        echo ✅ MySQL数据库初始化完成
+    )
 )
 
 :: 启动后端
