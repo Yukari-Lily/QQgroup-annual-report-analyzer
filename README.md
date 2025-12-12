@@ -78,7 +78,7 @@ mac默认可能5000端口被占用的话换一个端口
    - 编辑 `frontend/vite.config.js`
    - 修改 `proxy.target` 为实际后端地址（如 `http://localhost:5001`）
 
-**方式 B：使用 Docker 部署（推荐用于生产）**
+**方式 B：使用 Docker 部署**
 
 详见 [DOCKER.md](DOCKER.md) 文件，或执行：
 
