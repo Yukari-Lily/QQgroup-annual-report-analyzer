@@ -144,6 +144,10 @@ OPENAI_MODEL=gpt-3.5-turbo
 
 4. 查看结果：生成的报告在 `runtime_outputs` 目录
 
+### 方式三：Docker部署
+
+习惯使用docker一键部署的用户可以尝试参考DOCKER.md文件进行部署
+第一次部署可能较慢，但是一键部署不用啥操作
 
 ## 📊 生成的报告包含
 
