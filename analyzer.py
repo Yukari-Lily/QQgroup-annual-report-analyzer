@@ -298,6 +298,10 @@ class ChatAnalyzer:
                 if re.match(r'^[\d\W]+$', word) and not is_emoji(word):
                     continue
                 
+                # 提前过滤黑名单（性能优化：避免统计后再过滤）
+                if word in cfg.BLACKLIST:
+                    continue
+                
                 self.word_freq[word] += 1
                 if sender_uin:
                     self.word_contributors[word][sender_uin] += 1
@@ -410,10 +414,6 @@ class ChatAnalyzer:
             
             # 黑名单跳过
             if word in cfg.BLACKLIST:
-                continue
-            
-            # 停用词（emoji除外）
-            if word in cfg.STOPWORDS and not is_emoji(word):
                 continue
             
             # 单字特殊处理（采用旧版逻辑）
