@@ -27,7 +27,7 @@
     <div v-if="activeTab === 'upload'" class="tab-content">
       <!-- 步骤1: 上传文件 -->
       <div v-if="step === 1" class="card">
-        <h2>QQ群年度报告分析器（线上版）</h2>
+        <h2>QQ群年度报告分析器</h2>
         <p>上传 qq-chat-exporter 导出的 JSON，系统将自动分析并生成年度报告</p>
         
         <div class="card" style="margin-top: 20px;">
@@ -44,7 +44,7 @@
               <input type="radio" v-model="autoSelect" :value="true" />
               <div class="mode-content">
                 <strong>🤖 AI自动选词</strong>
-                <p>AI自动选择前10个热词并生成报告（更快）</p>
+                <p>AI自动选择前10个热词并生成报告</p>
               </div>
             </label>
           </div>
@@ -429,13 +429,43 @@ const resetState = () => {
   currentWordPage.value = 1
 }
 
+// 计算动态超时时间
+const calculateTimeout = (fileSize, useAI) => {
+  // 基础超时: 60秒
+  const baseTimeout = 60
+  
+  // 文件大小因素: 每MB增加0.5秒
+  const fileSizeMB = fileSize / (1024 * 1024)
+  const fileSizeTimeout = Math.ceil(fileSizeMB * 0.5)
+  
+  // AI因素: 使用AI额外增加90秒（选词+评论需要更多时间）
+  const aiTimeout = useAI ? 90 : 0
+  
+  // 计算总超时时间（秒）
+  let totalTimeout = baseTimeout + fileSizeTimeout + aiTimeout
+  
+  // 设置最小值120秒，最大值600秒（10分钟）
+  totalTimeout = Math.max(120, Math.min(totalTimeout, 600))
+  
+  return totalTimeout * 1000 // 转换为毫秒
+}
+
 // 步骤1-3: 上传并分析
 const uploadAndAnalyze = async () => {
   if (!file.value) return
   loading.value = true
+  
+  // 计算动态超时时间
+  const timeoutMs = calculateTimeout(file.value.size, autoSelect.value)
+  const timeoutSeconds = Math.ceil(timeoutMs / 1000)
+  
   loadingMessage.value = autoSelect.value 
-    ? '正在上传并分析，AI将自动选词并生成报告...' 
-    : '正在上传并分析，请稍候...'
+    ? `正在上传并分析，AI将自动选词并生成报告...\n（预计最多需要 ${timeoutSeconds} 秒）` 
+    : `正在上传并分析，请稍候...\n（预计最多需要 ${timeoutSeconds} 秒）`
+  
+  console.log(`📊 文件大小: ${(file.value.size / (1024 * 1024)).toFixed(2)} MB`)
+  console.log(`🤖 使用AI: ${autoSelect.value ? '是' : '否'}`)
+  console.log(`⏱️ 超时设置: ${timeoutSeconds} 秒`)
   
   try {
     const form = new FormData()
@@ -444,7 +474,7 @@ const uploadAndAnalyze = async () => {
     
     const { data } = await axios.post(`${API_BASE}/upload`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000
+      timeout: timeoutMs
     })
     
     if (data.error) throw new Error(data.error)
@@ -505,6 +535,11 @@ const finalizeReport = async () => {
   }
   
   loading.value = true
+  
+  // finalize阶段主要是AI评论生成，设置固定超时180秒（3分钟）
+  const finalizeTimeout = 180 * 1000
+  console.log('⏱️ Finalize超时设置: 180 秒（AI评论生成）')
+  
   try {
     // 按词频排序选中的词（从高到低）
     const wordFreqMap = {}
@@ -519,6 +554,8 @@ const finalizeReport = async () => {
       report_id: currentReport.value.report_id,
       selected_words: sortedWords,
       oss_key: currentReport.value.oss_key
+    }, {
+      timeout: finalizeTimeout
     })
     
     if (data.error) throw new Error(data.error)
