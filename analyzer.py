@@ -10,18 +10,27 @@ from utils import (
     extract_emojis,
     is_emoji,
     parse_timestamp,
+    parse_datetime,
     clean_text,
     calculate_entropy,
     analyze_single_chars,
 )
+from logger import get_logger, init_logging
+
+init_logging()
 
 jieba.setLogLevel(jieba.logging.INFO)
+
+logger = get_logger('analyzer')
 
 class ChatAnalyzer:
     def __init__(self, data):
         self.data = data
         self.messages = data.get('messages', [])
         self.chat_name = data.get('chatName', data.get('chatInfo', {}).get('name', '未知群聊'))
+        
+        # 应用时间范围过滤
+        self._filter_messages_by_time()
         self.uin_to_name = {}
         self.msgid_to_sender = {}
         self.word_freq = Counter()
@@ -47,6 +56,71 @@ class ChatAnalyzer:
         self.single_char_stats = {}  # 单字统计
         self.cleaned_texts = []  # 缓存清洗后的文本
         self._build_mappings()
+    
+    def _filter_messages_by_time(self):
+        """根据配置的时间范围过滤消息"""
+        if cfg.MESSAGE_START_DATE is None and cfg.MESSAGE_END_DATE is None:
+            return  # 无时间限制，不过滤
+        
+        from datetime import datetime
+        
+        # 解析配置的日期
+        start_dt = None
+        end_dt = None
+        
+        if cfg.MESSAGE_START_DATE:
+            try:
+                start_dt = datetime.strptime(cfg.MESSAGE_START_DATE, '%Y-%m-%d')
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                # 转换为东八区
+                from datetime import timezone, timedelta
+                start_dt = start_dt.replace(tzinfo=timezone(timedelta(hours=8)))
+            except Exception as e:
+                logger.warning(f"起始日期格式错误: {cfg.MESSAGE_START_DATE}, 错误: {e}")
+        
+        if cfg.MESSAGE_END_DATE:
+            try:
+                end_dt = datetime.strptime(cfg.MESSAGE_END_DATE, '%Y-%m-%d')
+                end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+                # 转换为东八区
+                from datetime import timezone, timedelta
+                end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=8)))
+            except Exception as e:
+                logger.warning(f"结束日期格式错误: {cfg.MESSAGE_END_DATE}, 错误: {e}")
+        
+        if start_dt is None and end_dt is None:
+            return  # 日期解析失败，不过滤
+        
+        # 过滤消息
+        original_count = len(self.messages)
+        filtered_messages = []
+        
+        for msg in self.messages:
+            timestamp = msg.get('timestamp', '')
+            msg_dt = parse_datetime(timestamp)
+            
+            if msg_dt is None:
+                continue 
+            
+            # 检查是否在时间范围内
+            if start_dt and msg_dt < start_dt:
+                continue
+            if end_dt and msg_dt > end_dt:
+                continue
+            
+            filtered_messages.append(msg)
+        
+        self.messages = filtered_messages
+        filtered_count = len(self.messages)
+        
+        if start_dt or end_dt:
+            time_range = []
+            if start_dt:
+                time_range.append(f"从 {cfg.MESSAGE_START_DATE}")
+            if end_dt:
+                time_range.append(f"到 {cfg.MESSAGE_END_DATE}")
+            logger.info(f"⏰ 时间范围过滤: {' '.join(time_range)}")
+            logger.info(f"   原始消息: {original_count} 条, 过滤后: {filtered_count} 条")
 
     def _is_bot_message(self, msg):
         """判断是否为机器人消息（基于 subMsgType）"""
@@ -58,22 +132,20 @@ class ChatAnalyzer:
         return sub_msg_type in [577, 65]
 
     def _build_mappings(self):
-        """构建 uin 到 name 的映射，优先保留有效的 name"""
+        # 构建 uin 到 name 的映射，优先保留有效的 name
         # 先收集每个 uin 的所有 name（按顺序）和 sendMemberName
         uin_names = defaultdict(list)
         uin_member_names = {}  # 存储最后的 sendMemberName
         
         for msg in self.messages:
-            # 跳过机器人消息
             if self._is_bot_message(msg):
                 continue
             
             sender = msg.get('sender', {})
             uin = sender.get('uin')
-            name = sender.get('name', '').strip()  # 去除首尾空白
+            name = sender.get('name', '').strip()
             msg_id = msg.get('messageId')
             
-            # 收集 name
             if uin and name:
                 # 只在 name 与上一个不同时添加
                 if not uin_names[uin] or uin_names[uin][-1] != name:
@@ -112,32 +184,31 @@ class ChatAnalyzer:
         return self.uin_to_name.get(uin, f"未知用户({uin})")
 
     def analyze(self):
-        print(f"📊 开始分析: {self.chat_name}")
-        print(f"📝 消息数: {len(self.messages)}")
-        print("=" * cfg.CONSOLE_WIDTH)
+        logger.info(f"📊 开始分析: {self.chat_name}")
+        logger.info(f"📝 消息总数: {len(self.messages)}")
         
-        print("\n🧹 预处理文本...")
+        logger.info("🧹 预处理文本...")
         self._preprocess_texts()
         
-        print("🔤 分析单字独立性...")
+        logger.info("🔤 分析单字独立性...")
         self.single_char_stats = analyze_single_chars(self.cleaned_texts)
         
-        print("🔍 新词发现...")
+        logger.info("🔍 新词发现...")
         self._discover_new_words()
         
-        print("🔗 词组合并...")
+        logger.info("🔗 词组合并...")
         self._merge_word_pairs()
         
-        print("📈 分词统计...")
+        logger.info("📈 分词统计...")
         self._tokenize_and_count()
         
-        print("🎮 趣味统计...")
+        logger.info("🎮 趣味统计...")
         self._fun_statistics()
         
-        print("🧹 过滤整理...")
+        logger.info("🧹 过滤整理...")
         self._filter_results()
         
-        print("\n✅ 完成!")
+        logger.info("✅ 分析完成!")
 
     def _preprocess_texts(self):
         """预处理所有文本"""
@@ -158,9 +229,9 @@ class ChatAnalyzer:
                 skipped += 1
         
         if cfg.FILTER_BOT_MESSAGES and bot_filtered > 0:
-            print(f"   有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条, 过滤机器人: {bot_filtered} 条")
+            logger.debug(f"有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条, 过滤机器人: {bot_filtered} 条")
         else:
-            print(f"   有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条")
+            logger.debug(f"有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条")
 
     def _discover_new_words(self):
         """新词发现"""
@@ -170,7 +241,6 @@ class ChatAnalyzer:
         total_chars = 0
         
         for text in self.cleaned_texts:
-            # 按标点分句
             sentences = re.split(r'[，。！？、；：""''（）\s\n\r,\.!?\(\)]', text)
             for sentence in sentences:
                 sentence = sentence.strip()
@@ -181,8 +251,8 @@ class ChatAnalyzer:
                 for n in range(2, min(6, len(sentence) + 1)):
                     for i in range(len(sentence) - n + 1):
                         ngram = sentence[i:i+n]
-                        # 跳过纯数字/符号/纯英文
-                        if re.match(r'^[\d\s\W]+$', ngram) or re.match(r'^[a-zA-Z]+$', ngram):
+                        # 只跳过纯空格
+                        if not ngram.strip():
                             continue
                         ngram_freq[ngram] += 1
                         if i > 0:
@@ -194,7 +264,6 @@ class ChatAnalyzer:
                         else:
                             right_neighbors[ngram]['<EOS>'] += 1
         
-        # 筛选新词
         for word, freq in ngram_freq.items():
             if freq < cfg.NEW_WORD_MIN_FREQ:
                 continue
@@ -206,7 +275,7 @@ class ChatAnalyzer:
             if min_ent < cfg.ENTROPY_THRESHOLD:
                 continue
             
-            # PMI（内部凝聚度）
+            # PMI
             min_pmi = float('inf')
             for i in range(1, len(word)):
                 left_freq = ngram_freq.get(word[:i], 0)
@@ -223,14 +292,12 @@ class ChatAnalyzer:
             
             self.discovered_words.add(word)
         
-        # 添加到jieba词典
         for word in self.discovered_words:
             jieba.add_word(word, freq=1000)
         
-        print(f"   发现 {len(self.discovered_words)} 个新词")
+        logger.debug(f"发现 {len(self.discovered_words)} 个新词")
 
     def _merge_word_pairs(self):
-        """词组合并"""
         bigram_counter = Counter()
         word_right_counter = Counter()
         
@@ -245,7 +312,6 @@ class ChatAnalyzer:
                 bigram_counter[(w1, w2)] += 1
                 word_right_counter[w1] += 1
         
-        # 找出应该合并的词对
         for (w1, w2), count in bigram_counter.items():
             merged = w1 + w2
             if len(merged) > cfg.MERGE_MAX_LEN:
@@ -260,18 +326,15 @@ class ChatAnalyzer:
                     self.merged_words[merged] = (w1, w2, count, prob)
                     jieba.add_word(merged, freq=count * 1000)
         
-        print(f"   合并 {len(self.merged_words)} 个词组")
+        logger.debug(f"合并 {len(self.merged_words)} 个词组")
         
-        # 显示前几个
         if self.merged_words:
             sorted_merges = sorted(self.merged_words.items(), key=lambda x: -x[1][2])[:10]
             for merged, (w1, w2, cnt, prob) in sorted_merges:
-                print(f"      {merged}: {w1}+{w2} ({cnt}次, {prob:.0%})")
+                logger.debug(f"  {merged}: {w1}+{w2} ({cnt}次, {prob:.0%})")
 
     def _tokenize_and_count(self):
-        """分词统计"""
         for idx, msg in enumerate(self.messages):
-            # 跳过机器人消息
             if self._is_bot_message(msg):
                 continue
             
@@ -294,10 +357,6 @@ class ChatAnalyzer:
                 if not word:
                     continue
                 
-                # 跳过纯数字/符号
-                if re.match(r'^[\d\W]+$', word) and not is_emoji(word):
-                    continue
-                
                 # 提前过滤黑名单（性能优化：避免统计后再过滤）
                 if word in cfg.BLACKLIST:
                     continue
@@ -310,11 +369,10 @@ class ChatAnalyzer:
 
     def _fun_statistics(self):
         """趣味统计"""
-        prev_clean = None  # 改用清理后文本
+        prev_clean = None  
         prev_sender = None
         
         for msg in self.messages:
-            # 跳过机器人消息
             if self._is_bot_message(msg):
                 continue
             
@@ -401,26 +459,27 @@ class ChatAnalyzer:
         filtered_freq = Counter()
         
         for word, freq in self.word_freq.items():
-            # 长度过滤
             if len(word) < cfg.MIN_WORD_LEN or len(word) > cfg.MAX_WORD_LEN:
                 continue
             if freq < cfg.MIN_FREQ:
                 continue
             
-            # 白名单直接通过
             if word in cfg.WHITELIST:
                 filtered_freq[word] = freq
                 continue
             
-            # 黑名单跳过
             if word in cfg.BLACKLIST:
                 continue
             
-            # 单字特殊处理（采用旧版逻辑）
+            # 单字特殊处理
             if len(word) == 1:
                 if is_emoji(word):
                     pass  # emoji保留
                 else:
+                    # 单个符号跳过（但数字/字母走单字统计）
+                    if word in string.punctuation or word in '，。！？；：、""''（）【】':
+                        continue
+                    # 其他单字（数字/字母/汉字）走独立性检查
                     stats = self.single_char_stats.get(word)
                     if stats:
                         total, indep, ratio = stats
@@ -428,15 +487,7 @@ class ChatAnalyzer:
                             continue
                     else:
                         continue
-            
-            # 纯数字跳过
-            if re.match(r'^[\d\s]+$', word):
-                continue
-            
-            # 纯标点跳过
-            if all(c in string.punctuation or c in '，。！？；：、""''（）【】' for c in word):
-                continue
-            
+                        
             filtered_freq[word] = freq
         
         self.word_freq = filtered_freq
@@ -447,7 +498,7 @@ class ChatAnalyzer:
             if len(samples) > cfg.SAMPLE_COUNT:
                 self.word_samples[word] = random.sample(samples, cfg.SAMPLE_COUNT)
         
-        print(f"   过滤后 {len(self.word_freq)} 个词")
+        logger.debug(f"过滤后 {len(self.word_freq)} 个词")
 
     def get_top_words(self, n=None):
         n = n or cfg.TOP_N

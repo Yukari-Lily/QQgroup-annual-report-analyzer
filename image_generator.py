@@ -8,6 +8,9 @@ import asyncio
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import config as cfg
 from utils import sanitize_filename
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # 每个词独立的贡献者颜色
@@ -124,11 +127,11 @@ class AIWordSelector:
         self.model = os.getenv('OPENAI_MODEL', cfg.OPENAI_MODEL)
         
         if not api_key or api_key == "sk-your-api-key-here":
-            print("⚠️ 未配置OpenAI API Key，无法使用AI选词")
+            logger.warning("⚠️ 未配置OpenAI API Key，无法使用AI选词")
             return
         
         if not self.model:
-            print("⚠️ 未配置OpenAI模型")
+            logger.warning("⚠️ 未配置OpenAI模型")
             return
         
         try:
@@ -140,14 +143,14 @@ class AIWordSelector:
                 base_url=base_url,
                 http_client=httpx.Client(timeout=120.0)
             )
-            print(f"✅ AI客户端初始化成功 (模型: {self.model})")
+            logger.info(f"✅ AI客户端初始化成功 (模型: {self.model})")
         except Exception as e:
-            print(f"⚠️ OpenAI客户端初始化失败: {e}")
+            logger.warning(f"⚠️ OpenAI客户端初始化失败: {e}")
     
     def select_words(self, candidate_words, top_n=200):
         """从候选词中智能选出10个年度热词"""
         if not self.client:
-            print("❌ AI未启用，请配置OpenAI API Key")
+            logger.error("❌ AI未启用，请配置OpenAI API Key")
             return None
         
         # 准备候选词列表（取前top_n个）
@@ -179,7 +182,7 @@ class AIWordSelector:
 7. 尽量不要选择“啊”等无意义填充词，除非在例句中使用的特别有趣"""
 
         try:
-            print("🤖 AI正在分析并选择年度热词...")
+            logger.info("🤖 AI正在分析并选择年度热词...")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -198,7 +201,7 @@ class AIWordSelector:
             if not result:
                 result = raw_result
             
-            print(f"   AI返回: {result}")
+            logger.debug(f"   AI返回: {result}")
             
             # 解析序号
             indices = []
@@ -211,7 +214,7 @@ class AIWordSelector:
                     continue
             
             if len(indices) < 10:
-                print(f"⚠️ AI只选出{len(indices)}个词，自动补充前几个...")
+                logger.warning(f"⚠️ AI只选出{len(indices)}个词，自动补充前几个...")
                 # 补充前面的词直到10个
                 for i in range(len(candidates)):
                     if i not in indices and len(indices) < 10:
@@ -220,14 +223,14 @@ class AIWordSelector:
             indices = indices[:10]
             selected = [candidates[i] for i in indices]
             
-            print("\n✅ AI选词完成:")
+            logger.info("\n✅ AI选词完成:")
             for i, word_data in enumerate(selected, 1):
-                print(f"   {i}. {word_data['word']} ({word_data['freq']}次)")
+                logger.info(f"   {i}. {word_data['word']} ({word_data['freq']}次)")
             
             return selected
             
         except Exception as e:
-            print(f"❌ AI选词失败: {e}")
+            logger.error(f"❌ AI选词失败: {e}")
             return None
 
 
@@ -262,7 +265,7 @@ class AICommentGenerator:
         model = os.getenv('OPENAI_MODEL', cfg.OPENAI_MODEL)
         
         if not api_key or api_key == "sk-your-api-key-here":
-            print("⚠️ 未配置OpenAI API Key，将跳过AI锐评")
+            logger.warning("⚠️ 未配置OpenAI API Key，将跳过AI锐评")
             return
         
         try:
@@ -277,10 +280,10 @@ class AICommentGenerator:
             
             # 调试信息
             if os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy'):
-                print("🌐 系统代理已自动加载")
+                logger.debug("🌐 系统代理已自动加载")
                 
         except Exception as e:
-            print(f"⚠️ OpenAI客户端初始化失败: {e}")
+            logger.warning(f"⚠️ OpenAI客户端初始化失败: {e}")
     
     def generate_comment(self, word, freq, samples):
         """为单个词生成锐评"""
@@ -321,39 +324,40 @@ class AICommentGenerator:
             
             return cleaned_content
         except Exception as e:
-            print(f"   ⚠️ AI生成失败({word}): {e}")
+            logger.warning(f"   ⚠️ AI生成失败({word}): {e}")
             return self._fallback_comment(word)
     
     def _fallback_comment(self, word):
         """备用锐评"""
-        fallbacks = [
+        import config as cfg
+        import random
+        fallbacks = getattr(cfg, "FALLBACK_COMMENTS", [
             "群友的快乐，简单又纯粹",
             "这个词承载了太多故事",
             "高频出现，必有原因",
             "群聊精华，浓缩于此",
             "每一次使用都是一次认同",
-        ]
-        import random
+        ])
         return random.choice(fallbacks)
     
     def generate_batch(self, words_data):
         """批量生成锐评"""
         if not self.client:
-            print("⚠️ AI未启用，使用默认锐评")
+            logger.warning("⚠️ AI未启用，使用默认锐评")
             return {w['word']: self._fallback_comment(w['word']) for w in words_data}
         
-        print("🤖 正在生成AI锐评...")
+        logger.info("🤖 正在生成AI锐评...")
         comments = {}
         for i, word_info in enumerate(words_data, 1):
             word = word_info['word']
-            print(f"   [{i}/{len(words_data)}] {word}...", end=' ')
+            logger.info(f"   [{i}/{len(words_data)}] {word}...")
             comment = self.generate_comment(
                 word, 
                 word_info['freq'], 
                 word_info.get('samples', [])
             )
             comments[word] = comment
-            print(f"✓")
+            logger.info(f"✓")
         
         return comments
 
@@ -381,17 +385,17 @@ class ImageGenerator:
     def display_words_for_selection(self):
         """展示词汇供用户选择"""
         if not self.json_data:
-            print("❌ 无数据可展示")
+            logger.error("❌ 无数据可展示")
             return False
         
         top_words = self.json_data.get('topWords', [])
         if not top_words:
-            print("❌ 无热词数据")
+            logger.error("❌ 无热词数据")
             return False
         
-        print("\n" + "=" * 70)
-        print("📝 请从以下热词中选择 10 个作为年度热词")
-        print("=" * 70)
+        logger.info("\n" + "=" * 70)
+        logger.info("📝 请从以下热词中选择 10 个作为年度热词")
+        logger.info("=" * 70)
         
         page_size = 50
         total_pages = (len(top_words) + page_size - 1) // page_size
@@ -401,8 +405,8 @@ class ImageGenerator:
             start = current_page * page_size
             end = min(start + page_size, len(top_words))
             
-            print(f"\n📄 第 {current_page + 1}/{total_pages} 页 ({start + 1}-{end})")
-            print("-" * 70)
+            logger.info(f"\n📄 第 {current_page + 1}/{total_pages} 页 ({start + 1}-{end})")
+            logger.info("-" * 70)
             
             for i in range(start, end):
                 word_info = top_words[i]
@@ -414,10 +418,10 @@ class ImageGenerator:
                 contributors = word_info.get('contributors', [])
                 contrib_str = contributors[0]['name'] if contributors else '未知'
                 
-                print(f"  {i+1:>3}. {word:<8} ({freq:>4}次) 👤{contrib_str:<10} | {sample_preview}")
+                logger.info(f"  {i+1:>3}. {word:<8} ({freq:>4}次) 👤{contrib_str:<10} | {sample_preview}")
             
-            print("-" * 70)
-            print("📌 [n]下一页 [p]上一页 [v 序号]详情 [s]选择 [q]退出")
+            logger.info("-" * 70)
+            logger.info("📌 [n]下一页 [p]上一页 [v 序号]详情 [s]选择 [q]退出")
             
             cmd = input(">>> ").strip().lower()
             
@@ -433,7 +437,7 @@ class ImageGenerator:
                     if 0 <= idx < len(top_words):
                         self._show_word_detail(top_words[idx], idx + 1)
                 except:
-                    print("⚠️ 请输入有效序号")
+                    logger.warning("⚠️ 请输入有效序号")
             elif cmd == 'q':
                 return False
         
@@ -441,30 +445,30 @@ class ImageGenerator:
     
     def _show_word_detail(self, word_info, idx):
         """显示词汇详情"""
-        print(f"\n{'='*60}")
-        print(f"【{idx}】{word_info['word']} - {word_info['freq']}次")
-        print(f"{'='*60}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"【{idx}】{word_info['word']} - {word_info['freq']}次")
+        logger.info(f"{'='*60}")
         
         contributors = word_info.get('contributors', [])
         if contributors:
-            print("\n👤 贡献者:")
+            logger.info("\n👤 贡献者:")
             max_count = contributors[0]['count']
             for i, c in enumerate(contributors[:5], 1):
                 bar = '█' * int(c['count'] / max_count * 20)
-                print(f"   {i}. {c['name']:<12} {bar} {c['count']}次")
+                logger.info(f"   {i}. {c['name']:<12} {bar} {c['count']}次")
         
         samples = word_info.get('samples', [])
         if samples:
-            print(f"\n📋 样本:")
+            logger.info(f"\n📋 样本:")
             for i, s in enumerate(samples[:5], 1):
-                print(f"   {i}. {s.replace(chr(10), ' ')[:60]}")
+                logger.info(f"   {i}. {s.replace(chr(10), ' ')[:60]}")
         
         input("\n按回车继续...")
     
     def _get_user_selection(self, top_words):
         """获取用户选择"""
-        print("\n" + "=" * 60)
-        print("📝 输入10个序号 (空格/逗号分隔，支持范围如1-5)")
+        logger.info("\n" + "=" * 60)
+        logger.info("📝 输入10个序号 (空格/逗号分隔，支持范围如1-5)")
         
         while True:
             selection = input("\n>>> ").strip()
@@ -486,15 +490,15 @@ class ImageGenerator:
             indices = list(dict.fromkeys(indices))  # 去重保序
             
             if len(indices) < 10:
-                print(f"⚠️ 需要10个，当前{len(indices)}个: {[i+1 for i in indices]}")
+                logger.warning(f"⚠️ 需要10个，当前{len(indices)}个: {[i+1 for i in indices]}")
                 continue
             
             indices = indices[:10]
             self.selected_words = [top_words[i] for i in indices]
             
-            print("\n✅ 已选:")
+            logger.info("\n✅ 已选:")
             for i, w in enumerate(self.selected_words, 1):
-                print(f"   {i}. {w['word']} ({w['freq']}次)")
+                logger.info(f"   {i}. {w['word']} ({w['freq']}次)")
             
             if input("\n确认? [Y/n]: ").strip().lower() in ('', 'y', 'yes'):
                 return True
@@ -637,7 +641,7 @@ class ImageGenerator:
     def generate_html(self):
         """生成HTML"""
         if not self.selected_words:
-            print("❌ 未选择热词")
+            logger.error("❌ 未选择热词")
             return None
         
         if not os.path.exists(self.template_dir):
@@ -645,7 +649,7 @@ class ImageGenerator:
         
         template_path = os.path.join(self.template_dir, 'report_template.html')
         if not os.path.exists(template_path):
-            print(f"❌ 模板不存在: {template_path}")
+            logger.error(f"❌ 模板不存在: {template_path}")
             return None
         
         env = Environment(
@@ -666,7 +670,7 @@ class ImageGenerator:
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
-        print(f"✅ HTML: {html_path}")
+        logger.info(f"✅ HTML: {html_path}")
         return html_path
     
     async def _html_to_image_async(self, html_path, output_path):
@@ -674,7 +678,7 @@ class ImageGenerator:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            print("❌ 需要: pip install playwright && playwright install chromium")
+            logger.error("❌ 需要: pip install playwright && playwright install chromium")
             return None
         
         async with async_playwright() as p:
@@ -700,14 +704,14 @@ class ImageGenerator:
         safe_name = sanitize_filename(self.json_data.get('chatName', '未知'))
         output_path = os.path.join(self.output_dir, f"{safe_name}_年度热词报告.png")
         
-        print("🖼️ 转换为图片...")
+        logger.info("🖼️ 转换为图片...")
         try:
             result = asyncio.run(self._html_to_image_async(html_path, output_path))
             if result:
-                print(f"✅ 图片: {output_path}")
+                logger.info(f"✅ 图片: {output_path}")
                 return output_path
         except Exception as e:
-            print(f"⚠️ 转换失败: {e}")
+            logger.warning(f"⚠️ 转换失败: {e}")
         
         return None
     
@@ -722,18 +726,18 @@ class ImageGenerator:
             enable_ai: 是否启用AI锐评
         """
         if not self.json_data:
-            print("❌ 无数据")
+            logger.error("❌ 无数据")
             return None, None
         
         # AI 智能选词模式
         if ai_select:
-            print("\n" + "=" * 60)
-            print("🤖 AI智能选词模式")
-            print("=" * 60)
+            logger.info("\n" + "=" * 60)
+            logger.info("🤖 AI智能选词模式")
+            logger.info("=" * 60)
             
             top_words = self.json_data.get('topWords', [])
             if not top_words:
-                print("❌ 无热词数据")
+                logger.error("❌ 无热词数据")
                 return None, None
             
             # 初始化AI选词器
@@ -744,13 +748,13 @@ class ImageGenerator:
             self.selected_words = self.ai_selector.select_words(top_words, top_n=200)
             
             if not self.selected_words:
-                print("⚠️ AI选词失败，改用自动选择前10个")
+                logger.warning("⚠️ AI选词失败，改用自动选择前10个")
                 self.selected_words = top_words[:10]
         
         # 简单自动选择模式
         elif auto_select or non_interactive:
             self.selected_words = self.json_data.get('topWords', [])[:10]
-            print(f"📝 自动选择前10个热词")
+            logger.info(f"📝 自动选择前10个热词")
         
         # 交互选择模式
         else:
@@ -763,7 +767,7 @@ class ImageGenerator:
         # AI锐评
         self._generate_ai_comments(enable_ai)
         
-        print("\n🎨 生成报告...")
+        logger.info("\n🎨 生成报告...")
         html_path = self.generate_html()
         if not html_path:
             return None, None
@@ -799,30 +803,30 @@ def ai_generate(json_path=None, analyzer=None):
 if __name__ == '__main__':
     import glob
     
-    print("=" * 60)
-    print("🖼️  报告生成器 ")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("🖼️  报告生成器 ")
+    logger.info("=" * 60)
     
     if len(sys.argv) > 1:
         json_path = sys.argv[1]
     else:
         json_files = glob.glob('*_分析结果.json')
         if not json_files:
-            print("❌ 未找到JSON文件")
+            logger.error("❌ 未找到JSON文件")
             sys.exit(1)
         if len(json_files) == 1:
             json_path = json_files[0]
         else:
             for i, f in enumerate(json_files, 1):
-                print(f"  {i}. {f}")
+                logger.info(f"  {i}. {f}")
             json_path = json_files[int(input("选择: ")) - 1]
     
-    print(f"\n📂 {json_path}")
+    logger.info(f"\n📂 {json_path}")
     
-    print("\n选择模式:")
-    print("  1. 交互选词 - 手动选择10个热词")
-    print("  2. 自动前10 - 直接选择前10个")
-    print("  3. AI智能选词 - 让AI从前200个中挑选最有趣的10个 🤖")
+    logger.info("\n选择模式:")
+    logger.info("  1. 交互选词 - 手动选择10个热词")
+    logger.info("  2. 自动前10 - 直接选择前10个")
+    logger.info("  3. AI智能选词 - 让AI从前200个中挑选最有趣的10个 🤖")
     
     mode = input("\n请选择 [1/2/3]: ").strip()
     
@@ -833,8 +837,8 @@ if __name__ == '__main__':
     else:
         html_path, img_path = interactive_generate(json_path=json_path)
     
-    print("\n" + "=" * 60)
+    logger.info("\n" + "=" * 60)
     if html_path:
-        print(f"📄 {html_path}")
+        logger.info(f"📄 {html_path}")
     if img_path:
-        print(f"🖼️ {img_path}")
+        logger.info(f"🖼️ {img_path}")

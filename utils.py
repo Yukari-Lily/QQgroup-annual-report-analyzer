@@ -4,6 +4,9 @@ import json
 import math
 from datetime import datetime, timezone, timedelta
 from collections import Counter
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 def load_json(filepath):
     """
@@ -12,7 +15,7 @@ def load_json(filepath):
     """
     try:
         import ijson
-        print(f"📖 使用流式解析加载 JSON 文件...")
+        logger.info("📖 使用流式解析加载 JSON 文件...")
         
         with open(filepath, 'rb') as f:
             parser = ijson.parse(f)
@@ -41,7 +44,7 @@ def load_json(filepath):
                         current_message = {}
                         message_count += 1
                         if message_count % 10000 == 0:
-                            print(f"   已处理 {message_count} 条消息...")
+                            logger.debug(f"   已处理 {message_count} 条消息...")
                     
                     elif prefix == 'messages.item' and event == 'end_map':
                         if current_message:
@@ -113,20 +116,20 @@ def load_json(filepath):
             chat_name = '未知群聊'
             result['chatInfo']['name'] = chat_name
             
-        print(f"✅ 成功加载 {len(result['messages'])} 条消息, 群聊: {chat_name}")
+        logger.info(f"✅ 成功加载 {len(result['messages'])} 条消息, 群聊: {chat_name}")
         return result
         
     except ImportError:
-        print("⚠️ ijson 未安装，使用标准加载（大文件可能导致内存不足）")
+        logger.warning("⚠️ ijson 未安装，使用标准加载（大文件可能导致内存不足）")
         with open(filepath, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠️ 流式解析失败，尝试标准加载: {e}")
+        logger.warning(f"⚠️ 流式解析失败，尝试标准加载: {e}")
         try:
             with open(filepath, 'r', encoding='utf-8-sig') as f:
                 return json.load(f)
         except MemoryError:
-            print("❌ 文件过大，无法加载到内存")
+            logger.error("❌ 文件过大，无法加载到内存")
             raise MemoryError("JSON 文件过大，请减小文件大小或增加系统内存")
 
 def extract_emojis(text):
@@ -164,6 +167,20 @@ def parse_timestamp(ts):
         local_dt = dt.astimezone(timezone(timedelta(hours=8)))
         return local_dt.hour
     except:
+        return None
+
+def parse_datetime(ts):
+    """
+    解析 ISO 8601 时间字符串，返回东八区 datetime 对象
+    """
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        local_dt = dt.astimezone(timezone(timedelta(hours=8)))
+        return local_dt
+    except Exception as e:
+        logger.warning(f"解析时间失败: {ts} | 错误: {e}")
         return None
 
 def clean_text(text):
