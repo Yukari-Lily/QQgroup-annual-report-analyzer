@@ -310,6 +310,9 @@ def upload_and_analyze():
         safe_filename = file.filename
 
     auto_select = request.form.get("auto_select", "false").lower() == "true"
+    use_stopwords = request.form.get("use_stopwords", "false").lower() == "true"
+    logger.info(f"🔍 收到上传请求 - auto_select参数: {request.form.get('auto_select')}, 解析后: {auto_select}")
+    logger.info(f"🔍 使用停用词库: {use_stopwords}")
     logger.info(f"🔍 收到上传请求 - auto_select参数: {request.form.get('auto_select')}, 解析后: {auto_select}")
 
     start_date = request.form.get('start_date')
@@ -350,7 +353,7 @@ def upload_and_analyze():
     try:
         # 使用流式解析加载JSON（避免内存溢出）
         data = load_json(temp_path)
-        analyzer = analyzer_mod.ChatAnalyzer(data)
+        analyzer = analyzer_mod.ChatAnalyzer(data, use_stopwords=use_stopwords)
         analyzer.analyze()
         report = analyzer.export_json()
 
@@ -423,7 +426,8 @@ def upload_and_analyze():
                 "report_id": report_id,
                 "chat_name": report.get('chatName', '未知群聊'),
                 "message_count": report.get('messageCount', 0),
-                "available_words": all_words
+                "available_words": all_words,
+                "stopwords_enabled": use_stopwords
             })
     except Exception as exc:
         import traceback

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os
 import re
 import random
 import string
@@ -23,11 +24,49 @@ jieba.setLogLevel(jieba.logging.INFO)
 
 logger = get_logger('analyzer')
 
+# 全局缓存停用词，避免重复读取
+_STOPWORDS_CACHE = None
+
+
+def load_stopwords():
+    """加载百度停用词库，文件缺失时返回空集合"""
+    global _STOPWORDS_CACHE
+    if _STOPWORDS_CACHE is not None:
+        return _STOPWORDS_CACHE
+    
+    base_dir = os.path.dirname(__file__)
+    # 兼容两种放置方式：项目根目录的 resources/ 和 backend/resources/
+    candidate_paths = [
+        os.path.join(base_dir, 'resources', 'baidu_stopwords.txt'),
+        os.path.join(base_dir, 'backend', 'resources', 'baidu_stopwords.txt'),
+    ]
+
+    stopwords_path = None
+    for p in candidate_paths:
+        if os.path.exists(p):
+            stopwords_path = p
+            break
+
+    if not stopwords_path:
+        logger.warning(f"停用词文件不存在，尝试路径: {candidate_paths}")
+        _STOPWORDS_CACHE = set()
+        return _STOPWORDS_CACHE
+
+    with open(stopwords_path, 'r', encoding='utf-8') as f:
+        words = {line.strip() for line in f if line.strip() and not line.startswith('#')}
+
+    _STOPWORDS_CACHE = words
+    logger.info(f"📚 已加载停用词 {len(words)} 个")
+    return _STOPWORDS_CACHE
+
+
 class ChatAnalyzer:
-    def __init__(self, data):
+    def __init__(self, data, use_stopwords=False, stopwords=None):
         self.data = data
         self.messages = data.get('messages', [])
         self.chat_name = data.get('chatName', data.get('chatInfo', {}).get('name', '未知群聊'))
+        self.use_stopwords = use_stopwords
+        self.stopwords = stopwords if stopwords is not None else (load_stopwords() if use_stopwords else set())
         
         # 应用时间范围过滤
         self._filter_messages_by_time()
@@ -357,6 +396,9 @@ class ChatAnalyzer:
                 if not word:
                     continue
                 
+                if self.use_stopwords and word in self.stopwords:
+                    continue
+
                 # 提前过滤黑名单（性能优化：避免统计后再过滤）
                 if word in cfg.BLACKLIST:
                     continue
@@ -541,25 +583,29 @@ class ChatAnalyzer:
     
     def export_json(self):
         """导出JSON格式结果（包含uin信息）"""
+        top_words = []
+        for word, freq in self.get_top_words():
+            # 再次在导出阶段过滤停用词，保证报告中不包含停用词
+            if self.use_stopwords and word in self.stopwords:
+                continue
+            top_words.append({
+                'word': word,
+                'freq': freq,
+                'contributors': [
+                    {
+                        'name': self.get_name(uin),
+                        'uin': uin,
+                        'count': count
+                    }
+                    for uin, count in self.word_contributors[word].most_common(cfg.CONTRIBUTOR_TOP_N)
+                ],
+                'samples': self.word_samples.get(word, [])[:cfg.SAMPLE_COUNT]
+            })
+
         result = {
             'chatName': self.chat_name,
             'messageCount': len(self.messages),
-            'topWords': [
-                {
-                    'word': word,
-                    'freq': freq,
-                    'contributors': [
-                        {
-                            'name': self.get_name(uin), 
-                            'uin': uin,
-                            'count': count
-                        }
-                        for uin, count in self.word_contributors[word].most_common(cfg.CONTRIBUTOR_TOP_N)
-                    ],
-                    'samples': self.word_samples.get(word, [])[:cfg.SAMPLE_COUNT]
-                }
-                for word, freq in self.get_top_words()
-            ],
+            'topWords': top_words,
             'rankings': {},
             'hourDistribution': {str(h): self.hour_distribution.get(h, 0) for h in range(24)}
         }

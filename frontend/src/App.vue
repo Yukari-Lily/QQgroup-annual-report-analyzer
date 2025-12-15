@@ -64,6 +64,16 @@
         </div>
 
         <div class="card" style="margin-top: 20px;">
+          <label class="toggle-row">
+            <input type="checkbox" v-model="useStopwords" />
+            <div>
+              <strong>使用停用词库（百度）</strong>
+              <p style="margin: 6px 0 0 0; color: #6e6e73;">过滤语气词、助词等常见停用词，减少噪声</p>
+            </div>
+          </label>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
           <h3>选词模式</h3>
           <div class="mode-selector">
             <label class="mode-option">
@@ -308,6 +318,7 @@ const aiFeatures = ref({
   ai_comment_enabled: false,
   ai_word_selection_enabled: false
 })
+const useStopwords = ref(false)
 
 const fetchCsrfToken = async () => {
   try {
@@ -558,6 +569,7 @@ const uploadAndAnalyze = async () => {
     const form = new FormData()
     form.append('file', file.value)
     form.append('auto_select', autoSelect.value ? 'true' : 'false')
+    form.append('use_stopwords', useStopwords.value ? 'true' : 'false')
     
     // 添加时间范围参数
     if (startDate.value) {
@@ -580,6 +592,7 @@ const uploadAndAnalyze = async () => {
     console.log('📦 后端返回数据:', data)
     console.log('🤖 自动选词模式:', autoSelect.value)
     console.log('✅ 返回数据包含success字段:', 'success' in data)
+    console.log('🛡️ 使用停用词库:', useStopwords.value)
     
     // AI自动模式：直接显示结果
     // 检查返回数据是否包含 success 字段（自动选词模式）或 available_words 字段（手动选词模式）
@@ -1085,6 +1098,18 @@ onMounted(async () => {
   background: rgba(255, 255, 255, 0.15);
   border-left-color: white;
   color: white;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #007aff;
 }
 
 .badge {
