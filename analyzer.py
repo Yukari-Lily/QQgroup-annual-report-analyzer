@@ -4,10 +4,11 @@ import re
 import random
 import string
 import math
-import jieba
+import jieba_fast as jieba
 from collections import Counter, defaultdict
 import config as cfg
 from utils import (
+    is_emoji,
     parse_timestamp,
     parse_datetime,
     clean_text,
@@ -22,54 +23,72 @@ jieba.setLogLevel(jieba.logging.INFO)
 
 logger = get_logger('analyzer')
 
-# 全局缓存停用词，避免重复读取
 _STOPWORDS_CACHE = None
 
+_DIGIT_SYMBOL_PATTERN = re.compile(r'^[\d\W]+$')
+_URL_PATTERN = re.compile(r'https?://')
+_SENTENCE_SPLIT_PATTERN = re.compile(r'[，。！？、；：""''（）\s\n\r,\.!?\(\)]')
 
 def load_stopwords():
-    """加载百度停用词库，文件缺失时返回空集合"""
     global _STOPWORDS_CACHE
     if _STOPWORDS_CACHE is not None:
         return _STOPWORDS_CACHE
+
+    if not cfg.USE_STOPWORDS:
+        logger.info("📚 停用词功能已禁用 (USE_STOPWORDS=False)")
+        _STOPWORDS_CACHE = set()
+        return _STOPWORDS_CACHE
+    
+    stopwords = set()
     
     base_dir = os.path.dirname(__file__)
-    # 兼容两种放置方式：项目根目录的 resources/ 和 backend/resources/
-    candidate_paths = [
-        os.path.join(base_dir, 'resources', 'baidu_stopwords.txt'),
-        os.path.join(base_dir, 'backend', 'resources', 'baidu_stopwords.txt'),
-    ]
-
+    candidate_paths = [os.path.join(base_dir, path) for path in cfg.STOPWORDS_PATHS]
+    
     stopwords_path = None
     for p in candidate_paths:
         if os.path.exists(p):
             stopwords_path = p
             break
-
-    if not stopwords_path:
-        logger.warning(f"停用词文件不存在，尝试路径: {candidate_paths}")
-        _STOPWORDS_CACHE = set()
-        return _STOPWORDS_CACHE
-
-    with open(stopwords_path, 'r', encoding='utf-8') as f:
-        words = {line.strip() for line in f if line.strip() and not line.startswith('#')}
-
-    _STOPWORDS_CACHE = words
-    logger.info(f"📚 已加载停用词 {len(words)} 个")
+    
+    file_count = 0
+    if stopwords_path:
+        try:
+            encoding = getattr(cfg, 'STOPWORDS_ENCODING', 'utf-8')
+            with open(stopwords_path, 'r', encoding=encoding) as f:
+                file_words = {line.strip() for line in f if line.strip() and not line.startswith('#')}
+            stopwords.update(file_words)
+            file_count = len(file_words)
+            logger.info(f"📚 从文件加载停用词 {file_count} 个 (来源: {os.path.basename(stopwords_path)})")
+        except Exception as e:
+            logger.error(f"❌ 加载停用词文件失败: {e}")
+    else:
+        if cfg.STOPWORDS_WARN_IF_MISSING:
+            logger.warning(f"⚠️  停用词文件不存在，尝试路径: {candidate_paths}")
+    
+    manual_words = set(cfg.STOPWORDS_MANUAL) if hasattr(cfg, 'STOPWORDS_MANUAL') else set()
+        
+    stopwords.update(manual_words)
+    manual_count = len(manual_words)
+    
+    total_count = len(stopwords)
+    if manual_count > 0:
+        logger.info(f"📝 手动添加停用词 {manual_count} 个")
+    logger.info(f"✅ 停用词总数: {total_count} 个 (文件: {file_count}, 手动: {manual_count})")
+    
+    _STOPWORDS_CACHE = stopwords
     return _STOPWORDS_CACHE
 
 
 class ChatAnalyzer:
-    def __init__(self, data, use_stopwords=False, stopwords=None):
+    def __init__(self, data):
         self.data = data
         self.messages = data.get('messages', [])
         self.chat_name = data.get('chatName', data.get('chatInfo', {}).get('name', '未知群聊'))
-        self.use_stopwords = use_stopwords
-        self.stopwords = stopwords if stopwords is not None else (load_stopwords() if use_stopwords else set())
+
+        self.use_stopwords = cfg.USE_STOPWORDS
+        self.stopwords = load_stopwords() if self.use_stopwords else set()
         
-        # 应用时间范围过滤
-        self._filter_messages_by_time()
-        self.uin_to_name = {}
-        self.msgid_to_sender = {}
+        self._filter_messages_and_build_mappings()
         self.word_freq = Counter()
         self.word_samples = defaultdict(list)
         self.word_contributors = defaultdict(Counter)
@@ -90,132 +109,132 @@ class ChatAnalyzer:
         self.hour_distribution = Counter()
         self.discovered_words = set()
         self.merged_words = {}
-        self.single_char_stats = {}  # 单字统计
-        self.cleaned_texts = []  # 缓存清洗后的文本
-        self._build_mappings()
+        self.single_char_stats = {}  
+        self.cleaned_texts_with_sender = []  # 改为存储 (文本, 发送者uin) 元组
+
     
-    def _filter_messages_by_time(self):
-        """根据配置的时间范围过滤消息"""
+    def _filter_messages_and_build_mappings(self):
+        """
+        合并时间过滤和构建 uin 到 name 及 msgid_to_sender 的映射，
+        减少两次遍历带来的性能开销
+        """
         if cfg.MESSAGE_START_DATE is None and cfg.MESSAGE_END_DATE is None:
-            return
-        
-        from datetime import datetime
-        
-        # 解析配置的日期
-        start_dt = None
-        end_dt = None
-        
-        if cfg.MESSAGE_START_DATE:
-            try:
-                start_dt = datetime.strptime(cfg.MESSAGE_START_DATE, '%Y-%m-%d')
-                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-                # 转换为东八区
-                from datetime import timezone, timedelta
-                start_dt = start_dt.replace(tzinfo=timezone(timedelta(hours=8)))
-            except Exception as e:
-                logger.warning(f"起始日期格式错误: {cfg.MESSAGE_START_DATE}, 错误: {e}")
-        
-        if cfg.MESSAGE_END_DATE:
-            try:
-                end_dt = datetime.strptime(cfg.MESSAGE_END_DATE, '%Y-%m-%d')
-                end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-                # 转换为东八区
-                from datetime import timezone, timedelta
-                end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=8)))
-            except Exception as e:
-                logger.warning(f"结束日期格式错误: {cfg.MESSAGE_END_DATE}, 错误: {e}")
-        
-        if start_dt is None and end_dt is None:
-            return  # 日期解析失败，不过滤
-        
-        # 过滤消息
-        original_count = len(self.messages)
-        filtered_messages = []
-        
-        for msg in self.messages:
-            timestamp = msg.get('timestamp', '')
-            msg_dt = parse_datetime(timestamp)
+            filtered_messages = self.messages
+        else:
+            from datetime import datetime
+            start_dt = None
+            end_dt = None
             
-            if msg_dt is None:
-                continue 
+            if cfg.MESSAGE_START_DATE:
+                try:
+                    start_dt = datetime.strptime(cfg.MESSAGE_START_DATE, '%Y-%m-%d')
+                    start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    from datetime import timezone, timedelta
+                    start_dt = start_dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                except Exception as e:
+                    logger.warning(f"起始日期格式错误: {cfg.MESSAGE_START_DATE}, 错误: {e}")
             
-            # 检查是否在时间范围内
-            if start_dt and msg_dt < start_dt:
-                continue
-            if end_dt and msg_dt > end_dt:
-                continue
+            if cfg.MESSAGE_END_DATE:
+                try:
+                    end_dt = datetime.strptime(cfg.MESSAGE_END_DATE, '%Y-%m-%d')
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+                    from datetime import timezone, timedelta
+                    end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                except Exception as e:
+                    logger.warning(f"结束日期格式错误: {cfg.MESSAGE_END_DATE}, 错误: {e}")
             
-            filtered_messages.append(msg)
-        
+            filtered_messages = []
+            for msg in self.messages:
+                timestamp = msg.get('timestamp', '')
+                msg_dt = parse_datetime(timestamp)
+                if msg_dt is None:
+                    continue
+                if start_dt and msg_dt < start_dt:
+                    continue
+                if end_dt and msg_dt > end_dt:
+                    continue
+                filtered_messages.append(msg)
+            
+            filtered_count = len(filtered_messages)
+            original_count = len(self.messages)
+            if start_dt or end_dt:
+                time_range = []
+                if start_dt:
+                    time_range.append(f"从 {cfg.MESSAGE_START_DATE}")
+                if end_dt:
+                    time_range.append(f"到 {cfg.MESSAGE_END_DATE}")
+                logger.info(f"⏰ 时间范围过滤: {' '.join(time_range)}")
+                logger.info(f"   原始消息: {original_count} 条, 过滤后: {filtered_count} 条")
+
         self.messages = filtered_messages
-        filtered_count = len(self.messages)
         
-        if start_dt or end_dt:
-            time_range = []
-            if start_dt:
-                time_range.append(f"从 {cfg.MESSAGE_START_DATE}")
-            if end_dt:
-                time_range.append(f"到 {cfg.MESSAGE_END_DATE}")
-            logger.info(f"⏰ 时间范围过滤: {' '.join(time_range)}")
-            logger.info(f"   原始消息: {original_count} 条, 过滤后: {filtered_count} 条")
-
-    def _is_bot_message(self, msg):
-        """判断是否为机器人消息（基于 subMsgType）"""
-        if not cfg.FILTER_BOT_MESSAGES:
-            return False
-        
-        raw_msg = msg.get('rawMessage', {})
-        sub_msg_type = raw_msg.get('subMsgType', 0)
-        return sub_msg_type in [577, 65]
-
-    def _build_mappings(self):
-        # 构建 uin 到 name 的映射，优先保留有效的 name
-        # 先收集每个 uin 的所有 name（按顺序）和 sendMemberName
         uin_names = defaultdict(list)
-        uin_member_names = {}  # 存储最后的 sendMemberName
-        
+        uin_member_names = {}
+        msgid_to_sender = {}
+        all_uins = set()
+
         for msg in self.messages:
             if self._is_bot_message(msg):
                 continue
-            
             sender = msg.get('sender', {})
             uin = sender.get('uin')
-            name = sender.get('name', '').strip()
+            name = (sender.get('name') or '').strip()
             msg_id = msg.get('messageId')
-            
+            if uin:
+                all_uins.add(uin)
             if uin and name:
-                # 只在 name 与上一个不同时添加
                 if not uin_names[uin] or uin_names[uin][-1] != name:
                     uin_names[uin].append(name)
-            
-            # 收集 sendMemberName（保留最后一个）
             if uin:
                 raw_msg = msg.get('rawMessage', {})
                 send_member_name = raw_msg.get('sendMemberName', '').strip()
                 if send_member_name:
                     uin_member_names[uin] = send_member_name
-            
             if msg_id and uin:
-                self.msgid_to_sender[msg_id] = uin
-        
-        # 为每个 uin 选择最合适的 name
-        for uin, names in uin_names.items():
-            # 从后往前找第一个不等于uin的 name
+                msgid_to_sender[msg_id] = uin
+
+        self.uin_to_name = {}
+        for uin in all_uins:
             chosen_name = None
-            for name in reversed(names):
-                if name != str(uin):
-                    chosen_name = name
-                    break
             
-            # 如果所有 name 都等于 uin，使用 sendMemberName
-            if chosen_name is None:
-                if uin in uin_member_names:
-                    chosen_name = uin_member_names[uin]
-                elif names:
-                    chosen_name = names[-1]  # 兜底：使用最后一个
+            # 优先使用有效的name
+            if uin in uin_names:
+                names = uin_names[uin]
+                for name in reversed(names):
+                    if name != str(uin):
+                        chosen_name = name
+                        break
+                if chosen_name is None and names:
+                    chosen_name = names[-1]
             
-            if chosen_name:
-                self.uin_to_name[uin] = chosen_name
+            # 其次使用sendMemberName
+            if chosen_name is None and uin in uin_member_names:
+                chosen_name = uin_member_names[uin]
+            
+            # 兜底：使用uin本身
+            if chosen_name is None or chosen_name == str(uin):
+                chosen_name = f"用户{uin}" 
+            
+            self.uin_to_name[uin] = chosen_name
+        
+        self.msgid_to_sender = msgid_to_sender
+
+    def _is_bot_message(self, msg):
+        """判断是否为机器人消息（基于 subMsgType 或 配置的机器人UIN）"""
+        if not cfg.FILTER_BOT_MESSAGES:
+            return False
+        
+        raw_msg = msg.get('rawMessage', {})
+        sub_msg_type = raw_msg.get('subMsgType', 0)
+        if sub_msg_type in [577, 65]:
+            return True
+        
+        if cfg.BOT_UINS:
+            sender_uin = msg.get('sender', {}).get('uin')
+            if sender_uin and str(sender_uin) in [str(uin) for uin in cfg.BOT_UINS]:
+                return True
+        
+        return False
 
     def get_name(self, uin):
         return self.uin_to_name.get(uin, f"未知用户({uin})")
@@ -223,52 +242,212 @@ class ChatAnalyzer:
     def analyze(self):
         logger.info(f"📊 开始分析: {self.chat_name}")
         logger.info(f"📝 消息总数: {len(self.messages)}")
-        
-        logger.info("🧹 预处理文本...")
-        self._preprocess_texts()
-        
+
+        logger.info("🧹 第一轮：处理消息，预处理文本、统计词频和趣味数据...")
+        self._process_messages_once()
+
         logger.info("🔤 分析单字独立性...")
-        self.single_char_stats = analyze_single_chars(self.cleaned_texts)
-        
+        self.single_char_stats = analyze_single_chars(
+            [text for text, _ in self.cleaned_texts_with_sender]
+        )
+
         logger.info("🔍 新词发现...")
-        self._discover_new_words()
-        
+        discovered_count = self._discover_new_words()  
+
         logger.info("🔗 词组合并...")
-        self._merge_word_pairs()
+        merged_count = self._merge_word_pairs()  
+
+        if discovered_count > 0 or merged_count > 0:
+            logger.info(f"🔄 发现 {discovered_count} 个新词，合并 {merged_count} 个词组")
+            logger.info("🔄 重新分词以应用新词...")
+            self._reprocess_word_frequency()
         
-        logger.info("📈 分词统计...")
-        self._tokenize_and_count()
-        
-        logger.info("🎮 趣味统计...")
-        self._fun_statistics()
-        
+        logger.info("🧹 释放临时内存...")
+        if self.cleaned_texts_with_sender:
+            memory_mb = len(self.cleaned_texts_with_sender) * 100 / 1024 / 1024
+            self.cleaned_texts_with_sender.clear()
+            logger.debug(f"已释放约 {memory_mb:.1f} MB 内存")
+
         logger.info("🧹 过滤整理...")
         self._filter_results()
-        
+
         logger.info("✅ 分析完成!")
 
-    def _preprocess_texts(self):
-        """预处理所有文本"""
+    def _process_messages_once(self):
+        """一次遍历实现预处理文本、词频统计、趣味统计"""
+
         skipped = 0
         bot_filtered = 0
+        prev_clean = None
+        prev_sender = None
+
         for msg in self.messages:
-            # 跳过机器人消息
+
+            if self._is_bot_message(msg):
+                continue
+            
+            sender_uin = msg.get('sender', {}).get('uin')
+            if not sender_uin:
+                continue
+
             if self._is_bot_message(msg):
                 bot_filtered += 1
                 continue
             
+            sender_uin = msg.get('sender', {}).get('uin')
+            if not sender_uin:
+                continue
+            
             content = msg.get('content', {})
             text = content.get('text', '') if isinstance(content, dict) else ''
-            cleaned = clean_text(text)
+
+            at_contents = []
+            if '@' in text:
+                elements = msg.get('rawMessage', {}).get('elements', [])
+                for element in elements:
+                    text_element = element.get('textElement')
+                    if not text_element:
+                        continue
+                        
+                    at_type = text_element.get('atType', 0)
+                    content_text = text_element.get('content', '')
+                    
+                    if at_type == 2 and content_text:
+                        at_contents.append(content_text)
+                        
+            cleaned = clean_text(text, at_contents)
+            
             if cleaned and len(cleaned) >= 1:
-                self.cleaned_texts.append(cleaned)
-            elif text:
-                skipped += 1
+                self.cleaned_texts_with_sender.append((cleaned, sender_uin))
+
+                words = list(jieba.cut(cleaned))
+
+                for word in words:
+                    word = word.strip()
+                    if not word:
+                        continue
+                    if self.use_stopwords and word in self.stopwords:
+                        continue
+                    
+                    self.word_freq[word] += 1
+                    if sender_uin:
+                        self.word_contributors[word][sender_uin] += 1
+                    if len(self.word_samples[word]) < cfg.SAMPLE_COUNT * 3:
+                        self.word_samples[word].append(cleaned)
+
+                self.user_msg_count[sender_uin] += 1
+                self.user_char_count[sender_uin] += len(cleaned)
+            else:
+                if text:
+                    skipped += 1
+
+            raw = msg.get('rawMessage', {})
+            elements = raw.get('elements', [])
+
+            image_count = 0 
+            emoji_count_from_elements = 0 
+            has_forward = False
+            has_link = False
+            has_reply = False
+
+            
+
+            for elem in elements:
+                elem_type = elem.get('elementType')
+                
+                if elem_type == 2:  # 图片元素
+                    pic_elem = elem.get('picElement', {})
+                    summary = pic_elem.get('summary', '')
+                    # 判断是否为表情包（summary格式为 [表情名称]）
+                    if summary and summary.startswith('[') and summary.endswith(']'):
+                        emoji_count_from_elements += 1
+                    else:
+                        image_count += 1
+                
+                elif elem_type == 1:  # 文本元素
+                    text_elem = elem.get('textElement', {})
+                    at_type = text_elem.get('atType', 0)
+                    at_uid = text_elem.get('atUid', '')
+                    at_uid_str = str(at_uid) if at_uid else ''
+                    if at_type > 0 and at_uid_str and at_uid_str != '0' and at_uid_str != '':
+                        self.user_at_count[sender_uin] += 1
+                        self.user_ated_count[at_uid_str] += 1
+                    
+                    # 链接统计
+                    text_content = text_elem.get('content', '')
+                    if re.search(_URL_PATTERN, text_content):
+                        has_link = True
+                
+                elif elem_type == 10:  # 链接元素
+                    has_link = True
+                
+                elif elem_type == 16 and 'multiForwardMsgElement' in elem:  # 合并转发元素
+                    has_forward = True
+                
+                elif elem_type == 7:  # 回复元素
+                    has_reply = True
+                    reply_elem = elem.get('replyElement', {})
+                    
+                    # 优先用 senderUid（如果有的话）
+                    target_uin = reply_elem.get('senderUid')
+                    
+                    # 如果没有，回退到用 msgId 查找
+                    if not target_uin or target_uin == '0':
+                        ref_msg_id = reply_elem.get('sourceMsgIdInRecords')
+                        if not ref_msg_id or ref_msg_id == '0':
+                            ref_msg_id = reply_elem.get('replayMsgId')
+                        
+                        if ref_msg_id and ref_msg_id != '0':
+                            target_uin = self.msgid_to_sender.get(ref_msg_id)
+                    
+                    if target_uin and str(target_uin) != '0':
+                        self.user_replied_count[str(target_uin)] += 1
+            
+            # 统计各项数据
+            if image_count > 0:
+                self.user_image_count[sender_uin] += image_count  
+            
+            if has_reply:
+                self.user_reply_count[sender_uin] += 1
+            
+            if has_link:
+                self.user_link_count[sender_uin] += 1
+            
+            if has_forward:
+                self.user_forward_count[sender_uin] += 1    
+
+            emojis = content.get('emojis', []) if isinstance(content, dict) else []
+            emoji_count = len(emojis) + emoji_count_from_elements
+            if emoji_count > 0:
+                self.user_emoji_count[sender_uin] += emoji_count
+            
+            hour = parse_timestamp(msg.get('timestamp', ''))
+            if hour is not None:
+                self.hour_distribution[hour] += 1
+                if hour in cfg.NIGHT_OWL_HOURS:
+                    self.user_night_count[sender_uin] += 1
+                if hour in cfg.EARLY_BIRD_HOURS:
+                    self.user_morning_count[sender_uin] += 1
+            
+            if cleaned and len(cleaned) >= 2:
+                if cleaned == prev_clean and sender_uin != prev_sender:
+                    self.user_repeat_count[sender_uin] += 1
+
+            prev_clean = cleaned
+            prev_sender = sender_uin
         
+        # 处理跳过及机器人消息计数日志
         if cfg.FILTER_BOT_MESSAGES and bot_filtered > 0:
-            logger.debug(f"有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条, 过滤机器人: {bot_filtered} 条")
+            logger.debug(f"有效文本: {len(self.cleaned_texts_with_sender)} 条, 跳过: {skipped} 条, 过滤机器人: {bot_filtered} 条")
         else:
-            logger.debug(f"有效文本: {len(self.cleaned_texts)} 条, 跳过: {skipped} 条")
+            logger.debug(f"有效文本: {len(self.cleaned_texts_with_sender)} 条, 跳过: {skipped} 条")
+
+        # 计算人均字数（保留1位小数）
+        for uin in self.user_msg_count:
+            msg_count = self.user_msg_count[uin]
+            char_count = self.user_char_count[uin]
+            if msg_count >= 10:
+                self.user_char_per_msg[uin] = round(char_count / msg_count, 1)
 
     def _discover_new_words(self):
         """新词发现"""
@@ -277,8 +456,8 @@ class ChatAnalyzer:
         right_neighbors = defaultdict(Counter)
         total_chars = 0
         
-        for text in self.cleaned_texts:
-            sentences = re.split(r'[，。！？、；：""''（）\s\n\r,\.!?\(\)]', text)
+        for text, _ in self.cleaned_texts_with_sender:
+            sentences = re.split(_SENTENCE_SPLIT_PATTERN, text)
             for sentence in sentences:
                 sentence = sentence.strip()
                 if len(sentence) < 2:
@@ -332,19 +511,23 @@ class ChatAnalyzer:
         for word in self.discovered_words:
             jieba.add_word(word, freq=1000)
         
+        discovered_count = len(self.discovered_words)
+
         logger.debug(f"发现 {len(self.discovered_words)} 个新词")
+
+        return discovered_count
 
     def _merge_word_pairs(self):
         bigram_counter = Counter()
         word_right_counter = Counter()
         
-        for text in self.cleaned_texts:
+        for text, _ in self.cleaned_texts_with_sender:
             words = [w for w in jieba.cut(text) if w.strip()]
             for i in range(len(words) - 1):
                 w1, w2 = words[i].strip(), words[i+1].strip()
                 if not w1 or not w2:
                     continue
-                if re.match(r'^[\d\W]+$', w1) or re.match(r'^[\d\W]+$', w2):
+                if re.match(_DIGIT_SYMBOL_PATTERN, w1) or re.match(_DIGIT_SYMBOL_PATTERN, w2):
                     continue
                 bigram_counter[(w1, w2)] += 1
                 word_right_counter[w1] += 1
@@ -362,6 +545,8 @@ class ChatAnalyzer:
                 if prob >= cfg.MERGE_MIN_PROB:
                     self.merged_words[merged] = (w1, w2, count, prob)
                     jieba.add_word(merged, freq=count * 1000)
+
+        merged_count = len(self.merged_words)
         
         logger.debug(f"合并 {len(self.merged_words)} 个词组")
         
@@ -369,166 +554,35 @@ class ChatAnalyzer:
             sorted_merges = sorted(self.merged_words.items(), key=lambda x: -x[1][2])[:10]
             for merged, (w1, w2, cnt, prob) in sorted_merges:
                 logger.debug(f"  {merged}: {w1}+{w2} ({cnt}次, {prob:.0%})")
-
-    def _tokenize_and_count(self):
-        for idx, msg in enumerate(self.messages):
-            if self._is_bot_message(msg):
-                continue
-            
-            sender_uin = msg.get('sender', {}).get('uin')
-            content = msg.get('content', {})
-            text = content.get('text', '') if isinstance(content, dict) else ''
-            original_text = text
-            cleaned = clean_text(text)
-            
-            if not cleaned:
-                continue
-            
+        
+        return merged_count
+    
+    def _reprocess_word_frequency(self):
+        # 清空旧的词频统计
+        self.word_freq = Counter()
+        self.word_samples = defaultdict(list)
+        self.word_contributors = defaultdict(Counter)
+        
+        # 重新处理每条消息
+        for cleaned, sender_uin in self.cleaned_texts_with_sender:
+            # 重新分词
             words = list(jieba.cut(cleaned))
             
             for word in words:
                 word = word.strip()
                 if not word:
                     continue
-                
                 if self.use_stopwords and word in self.stopwords:
                     continue
-
-                # 提前过滤黑名单（性能优化：避免统计后再过滤）
-                if word in cfg.BLACKLIST:
-                    continue
                 
+                # 重新统计
                 self.word_freq[word] += 1
                 if sender_uin:
                     self.word_contributors[word][sender_uin] += 1
                 if len(self.word_samples[word]) < cfg.SAMPLE_COUNT * 3:
                     self.word_samples[word].append(cleaned)
-
-    def _fun_statistics(self):
-        """趣味统计"""
-        prev_clean = None  
-        prev_sender = None
         
-        for msg in self.messages:
-            if self._is_bot_message(msg):
-                continue
-            
-            sender_uin = msg.get('sender', {}).get('uin')
-            if not sender_uin:
-                continue
-            
-            content = msg.get('content', {})
-            text = content.get('text', '') if isinstance(content, dict) else ''
-            timestamp = msg.get('timestamp', '')
-            raw = msg.get('rawMessage', {})
-            elements = raw.get('elements', [])
-            
-            self.user_msg_count[sender_uin] += 1
-            clean = clean_text(text)
-            self.user_char_count[sender_uin] += len(clean)
-            
-            has_image = False
-            is_emoji_image = False
-            has_forward = False
-            has_link = False
-            emoji_count_from_elements = 0
-            
-            for elem in elements:
-                elem_type = elem.get('elementType')
-                
-                # 跳过回复元素
-                if elem_type == 7:
-                    continue
-                
-                # 图片元素 
-                if elem_type == 2:
-                    has_image = True
-                    pic_elem = elem.get('picElement', {})
-                    summary = pic_elem.get('summary', '')
-                    # 检查是否为表情图片
-                    if summary and summary.startswith('[') and summary.endswith(']'):
-                        is_emoji_image = True
-                        emoji_count_from_elements += 1
-                
-                # 文本元素
-                elif elem_type == 1:
-                    text_elem = elem.get('textElement', {})
-                    
-                    # @统计
-                    at_type = text_elem.get('atType', 0)
-                    at_uid = text_elem.get('atUid', '')
-                    if at_type > 0 and at_uid and at_uid != '0':
-                        self.user_at_count[sender_uin] += 1
-                        self.user_ated_count[at_uid] += 1
-                    
-                    # 链接统计（文本中的链接）
-                    if not has_link:
-                        text_content = text_elem.get('content', '')
-                        if re.search(r'https?://', text_content):
-                            has_link = True
-                
-                # 链接元素
-                elif elem_type == 10:
-                    has_link = True
-                
-                # 转发元素
-                elif elem_type == 16 and 'multiForwardMsgElement' in elem:
-                    has_forward = True
-            
-            # ========== 图片统计（content.resources 中有图片 且 非表情） ==========
-            resources = content.get('resources', []) if isinstance(content, dict) else []
-            has_image_resource = any(res.get('type') == 'image' for res in resources)
-            if has_image_resource and not is_emoji_image:
-                self.user_image_count[sender_uin] += 1
-            
-            # ========== 转发统计 ==========
-            if has_forward:
-                self.user_forward_count[sender_uin] += 1
-            
-            # ========== 回复统计 ==========
-            reply_info = content.get('reply') if isinstance(content, dict) else None
-            if reply_info:
-                self.user_reply_count[sender_uin] += 1
-                ref_msg_id = reply_info.get('referencedMessageId')
-                if ref_msg_id and ref_msg_id in self.msgid_to_sender:
-                    target_uin = self.msgid_to_sender[ref_msg_id]
-                    self.user_replied_count[target_uin] += 1
-            
-            # ========== 表情统计 ==========
-            # content.emojis 中的QQ表情
-            emojis = content.get('emojis', []) if isinstance(content, dict) else []
-            emoji_count = len(emojis) + emoji_count_from_elements
-            if emoji_count > 0:
-                self.user_emoji_count[sender_uin] += emoji_count
-            
-            # ========== 链接统计 ==========
-            if has_link:
-                self.user_link_count[sender_uin] += 1
-            
-            # ========== 时段统计 ==========
-            hour = parse_timestamp(timestamp)
-            if hour is not None:
-                self.hour_distribution[hour] += 1
-                if hour in cfg.NIGHT_OWL_HOURS:
-                    self.user_night_count[sender_uin] += 1
-                if hour in cfg.EARLY_BIRD_HOURS:
-                    self.user_morning_count[sender_uin] += 1
-            
-            # ========== 复读统计 ==========
-            if clean and len(clean) >= 2:
-                if clean == prev_clean and sender_uin != prev_sender:
-                    self.user_repeat_count[sender_uin] += 1
-            
-            prev_clean = clean if clean else prev_clean
-            prev_sender = sender_uin
-        
-        # ========== 计算人均字数（保留1位小数） ==========
-        for uin in self.user_msg_count:
-            msg_count = self.user_msg_count[uin]
-            char_count = self.user_char_count[uin]
-            if msg_count >= 10:
-                self.user_char_per_msg[uin] = round(char_count / msg_count, 1)
-
+        logger.debug(f"重新分词完成，当前词汇总数: {len(self.word_freq)}")
 
     def _filter_results(self):
         """过滤结果"""
@@ -539,12 +593,12 @@ class ChatAnalyzer:
                 continue
             if freq < cfg.MIN_FREQ:
                 continue
-            
-            if word in cfg.WHITELIST:
+            if is_emoji(word):
                 filtered_freq[word] = freq
                 continue
-            
-            if word in cfg.BLACKLIST:
+
+            if word in cfg.WHITELIST:
+                filtered_freq[word] = freq
                 continue
             
             # 单字特殊处理

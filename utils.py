@@ -25,20 +25,20 @@ def load_json(filepath):
             }
             
             current_message = None
+            current_element = None
             in_messages = False
+            in_elements = False
             message_count = 0
             
             for prefix, event, value in parser:
                 if prefix == 'chatInfo.name' and event == 'string':
                     result['chatInfo']['name'] = value
                 
-                # 开始处理 messages 数组
                 elif prefix == 'messages' and event == 'start_array':
                     in_messages = True
                 elif prefix == 'messages' and event == 'end_array':
                     in_messages = False
                 
-                # 处理单个消息
                 elif in_messages:
                     if prefix == 'messages.item' and event == 'start_map':
                         current_message = {}
@@ -77,6 +77,47 @@ def load_json(filepath):
                                 current_message['content'] = {}
                             current_message['content']['text'] = value
                         
+                        # resources（图片等资源）
+                        elif prefix.startswith('messages.item.content.resources'):
+                            if 'content' not in current_message:
+                                current_message['content'] = {}
+                            if 'resources' not in current_message['content']:
+                                current_message['content']['resources'] = []
+                            
+                            if prefix == 'messages.item.content.resources.item' and event == 'start_map':
+                                current_message['content']['resources'].append({})
+                            elif prefix.endswith('.type') and event == 'string':
+                                if current_message['content']['resources']:
+                                    current_message['content']['resources'][-1]['type'] = value
+                        
+                        # emojis
+                        elif prefix == 'messages.item.content.emojis' and event == 'start_array':
+                            if 'content' not in current_message:
+                                current_message['content'] = {}
+                            current_message['content']['emojis'] = []
+                        elif prefix == 'messages.item.content.emojis.item' and event in ('string', 'start_map'):
+                            if 'content' in current_message and 'emojis' in current_message['content']:
+                                current_message['content']['emojis'].append({} if event == 'start_map' else value)
+                        
+                        # mentions
+                        elif prefix.startswith('messages.item.content.mentions'):
+                            if 'content' not in current_message:
+                                current_message['content'] = {}
+                            if 'mentions' not in current_message['content']:
+                                current_message['content']['mentions'] = []
+                            
+                            if prefix == 'messages.item.content.mentions.item' and event == 'start_map':
+                                current_message['content']['mentions'].append({})
+                            elif prefix.endswith('.uid') and event == 'string':
+                                if current_message['content']['mentions']:
+                                    current_message['content']['mentions'][-1]['uid'] = value
+                        
+                        # multiForward
+                        elif prefix == 'messages.item.content.multiForward' and event == 'start_map':
+                            if 'content' not in current_message:
+                                current_message['content'] = {}
+                            current_message['content']['multiForward'] = {}
+                        
                         # 回复信息
                         elif prefix == 'messages.item.content.reply.referencedMessageId' and event == 'string':
                             if 'content' not in current_message:
@@ -95,20 +136,74 @@ def load_json(filepath):
                                 current_message['rawMessage'] = {}
                             current_message['rawMessage']['sendMemberName'] = value
                         
-                        # elements 数组（用于 @ 统计）
-                        elif 'elements' in prefix:
+                        # 完整保留 elements
+                        elif prefix == 'messages.item.rawMessage.elements' and event == 'start_array':
                             if 'rawMessage' not in current_message:
                                 current_message['rawMessage'] = {}
-                            if 'elements' not in current_message['rawMessage']:
-                                current_message['rawMessage']['elements'] = []
+                            current_message['rawMessage']['elements'] = []
+                            in_elements = True
+                        
+                        elif prefix == 'messages.item.rawMessage.elements' and event == 'end_array':
+                            in_elements = False
+                        
+                        elif in_elements:
+                            if prefix == 'messages.item.rawMessage.elements.item' and event == 'start_map':
+                                current_element = {}
                             
-                            # 简化：只保存包含 @ 的元素
-                            if 'textElement.atType' in prefix and event == 'number' and value > 0:
-                                element = {'elementType': 1, 'textElement': {'atType': value}}
-                                current_message['rawMessage']['elements'].append(element)
-                            elif 'textElement.atUid' in prefix and event == 'string':
-                                if current_message['rawMessage']['elements']:
-                                    current_message['rawMessage']['elements'][-1]['textElement']['atUid'] = value
+                            elif prefix == 'messages.item.rawMessage.elements.item' and event == 'end_map':
+                                if current_element:
+                                    current_message['rawMessage']['elements'].append(current_element)
+                                    current_element = None
+                            
+                            # 元素类型
+                            elif prefix == 'messages.item.rawMessage.elements.item.elementType' and event == 'number':
+                                if current_element is not None:
+                                    current_element['elementType'] = value
+                            
+                            # textElement（文本/艾特）
+                            elif prefix.startswith('messages.item.rawMessage.elements.item.textElement'):
+                                if current_element is not None:
+                                    if 'textElement' not in current_element:
+                                        current_element['textElement'] = {}
+                                    
+                                    if prefix.endswith('.atType') and event == 'number':
+                                        current_element['textElement']['atType'] = value
+                                    elif prefix.endswith('.atUid') and event == 'string':
+                                        current_element['textElement']['atUid'] = value
+                                    elif prefix.endswith('.content') and event == 'string':
+                                        current_element['textElement']['content'] = value
+                            
+                            # picElement（图片）
+                            elif prefix.startswith('messages.item.rawMessage.elements.item.picElement'):
+                                if current_element is not None:
+                                    if 'picElement' not in current_element:
+                                        current_element['picElement'] = {}
+                                    
+                                    if prefix.endswith('.summary') and event == 'string':
+                                        current_element['picElement']['summary'] = value
+                            
+                            # replyElement（回复）
+                            elif prefix.startswith('messages.item.rawMessage.elements.item.replyElement'):
+                                if current_element is not None:
+                                    if 'replyElement' not in current_element:
+                                        current_element['replyElement'] = {}
+                                    
+                                    if prefix.endswith('.sourceMsgIdInRecords') and event == 'string':
+                                        current_element['replyElement']['sourceMsgIdInRecords'] = value
+                                    elif prefix.endswith('.replayMsgId') and event == 'string':
+                                        current_element['replyElement']['replayMsgId'] = value
+                                    elif prefix.endswith('.senderUid') and event in ('string', 'number'):
+                                        current_element['replyElement']['senderUid'] = str(value)                            
+
+                            # arkElement（链接/小程序）
+                            elif prefix == 'messages.item.rawMessage.elements.item.arkElement' and event == 'start_map':
+                                if current_element is not None:
+                                    current_element['arkElement'] = {}
+                            
+                            # multiForwardMsgElement（合并转发）
+                            elif prefix == 'messages.item.rawMessage.elements.item.multiForwardMsgElement' and event == 'start_map':
+                                if current_element is not None:
+                                    current_element['multiForwardMsgElement'] = {}
         
         # 确保群名有值
         chat_name = result['chatInfo'].get('name', '未知群聊')
@@ -131,7 +226,7 @@ def load_json(filepath):
         except MemoryError:
             logger.error("❌ 文件过大，无法加载到内存")
             raise MemoryError("JSON 文件过大，请减小文件大小或增加系统内存")
-
+        
 def extract_emojis(text):
     emoji_pattern = re.compile(
         "["
@@ -183,31 +278,37 @@ def parse_datetime(ts):
         logger.warning(f"解析时间失败: {ts} | 错误: {e}")
         return None
 
-def clean_text(text):
+def clean_text(text, at_contents=None):
     """清理文本，去除表情、@、回复等干扰内容"""
     if not text:
         return ""
     
-    # 1. 去除回复标记 [回复 xxx: yyy]
-    text = re.sub(r'\[回复\s+[^\]]*\]', '', text)
+    # 1. 去除@内容
+    if at_contents:
+        for at_content in at_contents:
+            if at_content:
+                text = text.replace(at_content, '')
     
-    # 2. 去除@某人（包括群昵称中的空格、括号等）
-    # 匹配 @ 开头，后面的所有内容直到遇到"空格+中文/字母"（实际消息内容的开始）
-    text = re.sub(r'@[^\n]*?(?=\s+[\u4e00-\u9fffa-zA-Z])', '', text)
-    # 处理只有@没有后续内容的情况
-    text = re.sub(r'@[^\n]*$', '', text)
+    # 2. 去除方括号内容（仅当存在时）
+    if '[' in text or ']' in text:
+        result = []
+        bracket_depth = 0
+        for char in text:
+            if char == '[':
+                bracket_depth += 1
+            elif char == ']':
+                if bracket_depth > 0:
+                    bracket_depth -= 1
+            elif bracket_depth == 0:
+                result.append(char)
+        text = ''.join(result)
     
-    # 3. 循环去除所有方括号内容（如[图片][表情]等）
-    prev = None
-    while prev != text:
-        prev = text
-        text = re.sub(r'\[[^\[\]]*\]', '', text)
+    # 3. 去除链接（仅当存在时）
+    if 'http' in text or 'www.' in text:
+        text = re.sub(r'https?://\S+', '', text)
+        text = re.sub(r'www\.\S+', '', text)
     
-    # 4. 去除链接
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'www\.\S+', '', text)
-    
-    # 5. 去除多余空白
+    # 4. 去除多余空白
     text = re.sub(r'\s+', ' ', text).strip()
     
     return text
@@ -260,24 +361,20 @@ def sanitize_filename(filename):
 
 
 def analyze_single_chars(texts):
-    """分析单字的独立出现情况 - 来自旧版"""
     total_count = Counter()
     solo_count = Counter()
     boundary_count = Counter()
     punctuation = set('，。！？、；：""''（）,.!?;:\'"()[]【】《》<>…—～·')
     
     for text in texts:
-        # 统计每个字的总出现次数
         for char in text:
             if re.match(r'^[\u4e00-\u9fffa-zA-Z]$', char):
                 total_count[char] += 1
         
-        # 统计单字消息
         clean_chars = [c for c in text if re.match(r'^[\u4e00-\u9fffa-zA-Z]$', c)]
         if len(clean_chars) == 1:
             solo_count[clean_chars[0]] += 1
         
-        # 统计在边界位置的出现
         for i, char in enumerate(text):
             if not re.match(r'^[\u4e00-\u9fffa-zA-Z]$', char):
                 continue
