@@ -36,15 +36,6 @@
         <h2>QQ群年度报告分析器</h2>
         <p>上传 <a href="https://github.com/shuakami/qq-chat-exporter">qq-chat-exporter</a> 导出的 JSON，系统将自动分析并生成年度报告</p>
         
-        <!-- 重要提示 -->
-        <div class="notice-box">
-          <h3>⚠️ 重要提示</h3>
-          <ul>
-            <li><strong>开发中项目：</strong>本项目仍在开发阶段，可能会出现未知错误或不稳定情况。</li>
-            <li><strong>演示站点限制：</strong>本站点仅供演示使用，设有较严格的限流设置。为获得更好体验，推荐前往 <a href="https://github.com/ZiHuixi/QQgroup-annual-report-analyzer" target="_blank">GitHub 仓库</a> 自行部署，或搭建类似网站供他人使用。</li>
-            <li><strong>数据安全提醒：</strong>虽然本项目采用 AGPL-3.0 开源协议，但上传的聊天记录属于敏感数据，仍存在一定泄露风险。请根据实际情况谨慎使用，建议仅上传不包含隐私信息的数据。</li>
-          </ul>
-        </div>
         
         <div class="card" style="margin-top: 20px;">
           <h3>时间范围设置</h3>
