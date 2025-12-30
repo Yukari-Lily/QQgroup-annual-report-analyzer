@@ -543,67 +543,7 @@
 
 <script setup>
 import axios from 'axios'
-import { reactive, ref, computed, const generatePersonalReportFromServer = async () => {
-  if (!selectedPersonalServerFile.value || !targetUserName.value) return
-
-  personalLoading.value = true
-  personalError.value = ''
-
-  try {
-    const payload = {
-      file_key: selectedPersonalServerFile.value,
-      target_name: targetUserName.value,
-      use_stopwords: personalUseStopwords.value
-    }
-
-    const response = await axios.post(`${API_BASE}/local-json/personal-report`, payload, {
-      timeout: 300000
-    })
-
-    if (response.data.success && response.data.report) {
-      console.log('Personal report data:', response.data.report)
-      personalReport.value = {
-        ...response.data.report,
-        report_id: response.data.report_id,
-        report_url: response.data.report_url
-      }
-    } else {
-      console.error('Personal report generation failed:', response.data)
-      personalError.value = response.data.error || 'Failed to generate report'
-    }
-  } catch (err) {
-    console.error('Personal report generation failed:', err)
-    if (err.response?.data?.error) {
-      personalError.value = err.response.data.error
-    } else if (err.message.includes('timeout')) {
-      personalError.value = 'Request timed out. Please retry.'
-    } else {
-      personalError.value = 'Failed to generate report: ' + (err.message || 'Unknown error')
-    }
-  } finally {
-    personalLoading.value = false
-  }
-}
-
-watch(sourceMode, (mode) => {
-  if (mode === 'server') {
-    file.value = null
-    fetchServerFiles()
-  } else {
-    selectedServerFile.value = ''
-  }
-})
-
-watch(personalSourceMode, (mode) => {
-  if (mode === 'server') {
-    personalFile.value = null
-    fetchServerFiles()
-  } else {
-    selectedPersonalServerFile.value = ''
-  }
-})
-
-onMounted, watch } from 'vue'
+import { reactive, ref, computed, onMounted, watch } from 'vue'
 import Report from './Report.vue'
 import PersonalReport from './PersonalReport.vue'
 
@@ -1256,6 +1196,66 @@ const generatePersonalReport = async () => {
     personalLoading.value = false
   }
 }
+
+const generatePersonalReportFromServer = async () => {
+  if (!selectedPersonalServerFile.value || !targetUserName.value) return
+
+  personalLoading.value = true
+  personalError.value = ''
+
+  try {
+    const payload = {
+      file_key: selectedPersonalServerFile.value,
+      target_name: targetUserName.value,
+      use_stopwords: personalUseStopwords.value
+    }
+
+    const response = await axios.post(`${API_BASE}/local-json/personal-report`, payload, {
+      timeout: 300000
+    })
+
+    if (response.data.success && response.data.report) {
+      console.log('Personal report data:', response.data.report)
+      personalReport.value = {
+        ...response.data.report,
+        report_id: response.data.report_id,
+        report_url: response.data.report_url
+      }
+    } else {
+      console.error('Personal report generation failed:', response.data)
+      personalError.value = response.data.error || 'Failed to generate report'
+    }
+  } catch (err) {
+    console.error('Personal report generation failed:', err)
+    if (err.response?.data?.error) {
+      personalError.value = err.response.data.error
+    } else if (err.message.includes('timeout')) {
+      personalError.value = 'Request timed out. Please retry.'
+    } else {
+      personalError.value = 'Failed to generate report: ' + (err.message || 'Unknown error')
+    }
+  } finally {
+    personalLoading.value = false
+  }
+}
+
+watch(sourceMode, (mode) => {
+  if (mode === 'server') {
+    file.value = null
+    fetchServerFiles()
+  } else {
+    selectedServerFile.value = ''
+  }
+})
+
+watch(personalSourceMode, (mode) => {
+  if (mode === 'server') {
+    personalFile.value = null
+    fetchServerFiles()
+  } else {
+    selectedPersonalServerFile.value = ''
+  }
+})
 
 onMounted(async () => {
   await fetchCsrfToken()
