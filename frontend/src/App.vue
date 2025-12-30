@@ -91,20 +91,20 @@
         </div>
 
         <div class="card" style="margin-top: 20px;">
-          <h3>Data Source</h3>
+          <h3>数据来源</h3>
           <div class="source-selector">
             <label class="source-option">
               <input type="radio" v-model="sourceMode" value="upload" />
               <div class="source-content">
-                <strong>Upload local JSON</strong>
-                <p>Select a JSON file from your computer</p>
+                <strong>上传本地 JSON</strong>
+                <p>从你的电脑选择 JSON 文件</p>
               </div>
             </label>
             <label class="source-option">
               <input type="radio" v-model="sourceMode" value="server" />
               <div class="source-content">
-                <strong>Use server JSON</strong>
-                <p>Pick a file from the server directory</p>
+                <strong>使用服务器 JSON</strong>
+                <p>从服务器目录选择文件</p>
               </div>
             </label>
           </div>
@@ -113,26 +113,26 @@
         <div v-if="sourceMode === 'upload'" class="flex" style="margin-top: 20px;">
           <input type="file" accept=".json" @change="onFileChange" />
           <button :disabled="loading || !file" @click="uploadAndAnalyze">
-            {{ loading ? 'Analyzing...' : 'Start Analysis' }}
+            {{ loading ? '分析中...' : '开始分析' }}
           </button>
         </div>
 
         <div v-else class="server-file-picker" style="margin-top: 20px;">
           <div class="flex">
             <select v-model="selectedServerFile" class="server-file-select">
-              <option value="">Select a server file</option>
+              <option value="">请选择服务器文件</option>
               <option v-for="item in serverFiles" :key="item.path" :value="item.path">
                 {{ item.path }} ({{ formatFileSize(item.size) }})
               </option>
             </select>
             <button :disabled="serverFilesLoading" @click="fetchServerFiles">
-              {{ serverFilesLoading ? 'Loading...' : 'Refresh' }}
+              {{ serverFilesLoading ? '加载中...' : '刷新' }}
             </button>
             <button :disabled="loading || !selectedServerFile" @click="analyzeServerFile">
-              {{ loading ? 'Analyzing...' : 'Start Analysis' }}
+              {{ loading ? '分析中...' : '开始分析' }}
             </button>
           </div>
-          <p class="file-hint">Hint: mount JSON files into the server directory (LOCAL_JSON_DIR).</p>
+          <p class="file-hint"></p>
           <div v-if="serverFilesError" class="error-box">
             <p>{{ serverFilesError }}</p>
           </div>
@@ -428,20 +428,20 @@
         </div>
 
         <div class="card" style="margin-top: 20px;">
-          <h3>Data Source</h3>
+          <h3>数据来源</h3>
           <div class="source-selector">
             <label class="source-option">
               <input type="radio" v-model="personalSourceMode" value="upload" />
               <div class="source-content">
-                <strong>Upload local JSON</strong>
-                <p>Select a JSON file from your computer</p>
+                <strong>上传本地 JSON</strong>
+                <p>从你的电脑选择 JSON 文件</p>
               </div>
             </label>
             <label class="source-option">
               <input type="radio" v-model="personalSourceMode" value="server" />
               <div class="source-content">
-                <strong>Use server JSON</strong>
-                <p>Pick a file from the server directory</p>
+                <strong>使用服务器 JSON</strong>
+                <p>从服务器目录选择文件</p>
               </div>
             </label>
           </div>
@@ -450,29 +450,29 @@
         <div v-if="personalSourceMode === 'upload'" class="flex" style="margin-top: 20px;">
           <input type="file" accept=".json" @change="onPersonalFileChange" />
           <button :disabled="personalLoading || !personalFile || !targetUserName" @click="generatePersonalReport">
-            {{ personalLoading ? 'Analyzing...' : 'Generate Report' }}
+            {{ personalLoading ? '分析中...' : '生成报告' }}
           </button>
         </div>
 
         <div v-else class="server-file-picker" style="margin-top: 20px;">
           <div class="flex">
             <select v-model="selectedPersonalServerFile" class="server-file-select">
-              <option value="">Select a server file</option>
+              <option value="">请选择服务器文件</option>
               <option v-for="item in serverFiles" :key="item.path" :value="item.path">
                 {{ item.path }} ({{ formatFileSize(item.size) }})
               </option>
             </select>
             <button :disabled="serverFilesLoading" @click="fetchServerFiles">
-              {{ serverFilesLoading ? 'Loading...' : 'Refresh' }}
+              {{ serverFilesLoading ? '加载中...' : '刷新' }}
             </button>
             <button
               :disabled="personalLoading || !selectedPersonalServerFile || !targetUserName"
               @click="generatePersonalReportFromServer"
             >
-              {{ personalLoading ? 'Analyzing...' : 'Generate Report' }}
+              {{ personalLoading ? '分析中...' : '生成报告' }}
             </button>
           </div>
-          <p class="file-hint">Hint: mount JSON files into the server directory (LOCAL_JSON_DIR).</p>
+          <p class="file-hint"></p>
           <div v-if="serverFilesError" class="error-box">
             <p>{{ serverFilesError }}</p>
           </div>
@@ -589,12 +589,12 @@ const fetchServerFiles = async () => {
     const { data } = await axios.get(`${API_BASE}/local-json/files`)
     serverFiles.value = data.files || []
     if (!data.dir_exists) {
-      serverFilesError.value = 'Server directory not found. Check LOCAL_JSON_DIR.'
+      serverFilesError.value = '服务器目录不存在，请检查 LOCAL_JSON_DIR。'
     } else if (serverFiles.value.length === 0) {
-      serverFilesError.value = 'Server directory is empty. No JSON files found.'
+      serverFilesError.value = '服务器目录为空，未找到 JSON 文件。'
     }
   } catch (err) {
-    serverFilesError.value = err?.response?.data?.error || 'Failed to load server file list.'
+    serverFilesError.value = err?.response?.data?.error || '加载服务器文件列表失败。'
   } finally {
     serverFilesLoading.value = false
   }
@@ -915,21 +915,21 @@ const analyzeServerFile = async () => {
 
   if (autoSelect.value) {
     if (aiFeatures.value.ai_word_selection_enabled && aiFeatures.value.ai_comment_enabled) {
-      loadingMessage.value = `Analyzing server file, AI will auto-select words and generate report (AI comments)...
-(Estimated up to ${timeoutSeconds} seconds)`
+      loadingMessage.value = `正在分析服务器文件，AI 将自动选词并生成报告（含 AI 评论）...
+(预计最多 ${timeoutSeconds} 秒)`
     } else if (aiFeatures.value.ai_word_selection_enabled) {
-      loadingMessage.value = `Analyzing server file, AI will auto-select words and generate report...
-(Estimated up to ${timeoutSeconds} seconds)`
+      loadingMessage.value = `正在分析服务器文件，AI 将自动选词并生成报告...
+(预计最多 ${timeoutSeconds} 秒)`
     } else if (aiFeatures.value.ai_comment_enabled) {
-      loadingMessage.value = `Analyzing server file, auto-selecting top 10 words (AI comments)...
-(Estimated up to ${timeoutSeconds} seconds)`
+      loadingMessage.value = `正在分析服务器文件，自动选择前 10 个词（含 AI 评论）...
+(预计最多 ${timeoutSeconds} 秒)`
     } else {
-      loadingMessage.value = `Analyzing server file, auto-selecting top 10 words...
-(Estimated up to ${timeoutSeconds} seconds)`
+      loadingMessage.value = `正在分析服务器文件，自动选择前 10 个词...
+(预计最多 ${timeoutSeconds} 秒)`
     }
   } else {
-    loadingMessage.value = `Analyzing server file...
-(Estimated up to ${timeoutSeconds} seconds)`
+    loadingMessage.value = `正在分析服务器文件...
+(预计最多 ${timeoutSeconds} 秒)`
   }
 
   try {
@@ -951,7 +951,7 @@ const analyzeServerFile = async () => {
     await handleAnalyzeResponse(data)
   } catch (err) {
     const respErr = err?.response?.data?.error
-    const msg = respErr ? `Analysis failed: ${respErr}` : `Analysis failed: ${err.message || 'Unknown error'}`
+    const msg = respErr ? `分析失败: ${respErr}` : `分析失败: ${err.message || '未知错误'}`
     alert(msg)
   } finally {
     loading.value = false
@@ -1223,16 +1223,16 @@ const generatePersonalReportFromServer = async () => {
       }
     } else {
       console.error('Personal report generation failed:', response.data)
-      personalError.value = response.data.error || 'Failed to generate report'
+      personalError.value = response.data.error || '生成报告失败'
     }
   } catch (err) {
     console.error('Personal report generation failed:', err)
     if (err.response?.data?.error) {
       personalError.value = err.response.data.error
     } else if (err.message.includes('timeout')) {
-      personalError.value = 'Request timed out. Please retry.'
+      personalError.value = '请求超时，请重试。'
     } else {
-      personalError.value = 'Failed to generate report: ' + (err.message || 'Unknown error')
+      personalError.value = '生成报告失败: ' + (err.message || '未知错误')
     }
   } finally {
     personalLoading.value = false
