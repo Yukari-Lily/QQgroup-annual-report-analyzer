@@ -90,13 +90,54 @@
           </div>
         </div>
 
-        <div class="flex" style="margin-top: 20px;">
+        <div class="card" style="margin-top: 20px;">
+          <h3>Data Source</h3>
+          <div class="source-selector">
+            <label class="source-option">
+              <input type="radio" v-model="sourceMode" value="upload" />
+              <div class="source-content">
+                <strong>Upload local JSON</strong>
+                <p>Select a JSON file from your computer</p>
+              </div>
+            </label>
+            <label class="source-option">
+              <input type="radio" v-model="sourceMode" value="server" />
+              <div class="source-content">
+                <strong>Use server JSON</strong>
+                <p>Pick a file from the server directory</p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div v-if="sourceMode === 'upload'" class="flex" style="margin-top: 20px;">
           <input type="file" accept=".json" @change="onFileChange" />
           <button :disabled="loading || !file" @click="uploadAndAnalyze">
-            {{ loading ? '⏳ 分析中...' : '开始分析' }}
+            {{ loading ? 'Analyzing...' : 'Start Analysis' }}
           </button>
         </div>
-        
+
+        <div v-else class="server-file-picker" style="margin-top: 20px;">
+          <div class="flex">
+            <select v-model="selectedServerFile" class="server-file-select">
+              <option value="">Select a server file</option>
+              <option v-for="item in serverFiles" :key="item.path" :value="item.path">
+                {{ item.path }} ({{ formatFileSize(item.size) }})
+              </option>
+            </select>
+            <button :disabled="serverFilesLoading" @click="fetchServerFiles">
+              {{ serverFilesLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+            <button :disabled="loading || !selectedServerFile" @click="analyzeServerFile">
+              {{ loading ? 'Analyzing...' : 'Start Analysis' }}
+            </button>
+          </div>
+          <p class="file-hint">Hint: mount JSON files into the server directory (LOCAL_JSON_DIR).</p>
+          <div v-if="serverFilesError" class="error-box">
+            <p>{{ serverFilesError }}</p>
+          </div>
+        </div>
+
         <div v-if="loading" class="progress-info">
           <p>{{ loadingMessage }}</p>
         </div>
@@ -386,11 +427,55 @@
           </p>
         </div>
 
-        <div class="flex" style="margin-top: 20px;">
+        <div class="card" style="margin-top: 20px;">
+          <h3>Data Source</h3>
+          <div class="source-selector">
+            <label class="source-option">
+              <input type="radio" v-model="personalSourceMode" value="upload" />
+              <div class="source-content">
+                <strong>Upload local JSON</strong>
+                <p>Select a JSON file from your computer</p>
+              </div>
+            </label>
+            <label class="source-option">
+              <input type="radio" v-model="personalSourceMode" value="server" />
+              <div class="source-content">
+                <strong>Use server JSON</strong>
+                <p>Pick a file from the server directory</p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div v-if="personalSourceMode === 'upload'" class="flex" style="margin-top: 20px;">
           <input type="file" accept=".json" @change="onPersonalFileChange" />
           <button :disabled="personalLoading || !personalFile || !targetUserName" @click="generatePersonalReport">
-            {{ personalLoading ? '⏳ 分析中...' : '生成个人报告' }}
+            {{ personalLoading ? 'Analyzing...' : 'Generate Report' }}
           </button>
+        </div>
+
+        <div v-else class="server-file-picker" style="margin-top: 20px;">
+          <div class="flex">
+            <select v-model="selectedPersonalServerFile" class="server-file-select">
+              <option value="">Select a server file</option>
+              <option v-for="item in serverFiles" :key="item.path" :value="item.path">
+                {{ item.path }} ({{ formatFileSize(item.size) }})
+              </option>
+            </select>
+            <button :disabled="serverFilesLoading" @click="fetchServerFiles">
+              {{ serverFilesLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+            <button
+              :disabled="personalLoading || !selectedPersonalServerFile || !targetUserName"
+              @click="generatePersonalReportFromServer"
+            >
+              {{ personalLoading ? 'Analyzing...' : 'Generate Report' }}
+            </button>
+          </div>
+          <p class="file-hint">Hint: mount JSON files into the server directory (LOCAL_JSON_DIR).</p>
+          <div v-if="serverFilesError" class="error-box">
+            <p>{{ serverFilesError }}</p>
+          </div>
         </div>
 
         <div v-if="personalError" class="error-box" style="margin-top: 20px;">
@@ -427,7 +512,7 @@
             </div>
 
             <div class="flex" style="margin-top: 30px;">
-              <button @click="personalReport = null; targetUserName = ''; personalFile = null">创建新报告</button>
+              <button @click="personalReport = null; targetUserName = ''; personalFile = null; selectedPersonalServerFile = ''">创建新报告</button>
             </div>
           </div>
         </div>
@@ -458,7 +543,67 @@
 
 <script setup>
 import axios from 'axios'
-import { reactive, ref, computed, onMounted } from 'vue'
+import { reactive, ref, computed, const generatePersonalReportFromServer = async () => {
+  if (!selectedPersonalServerFile.value || !targetUserName.value) return
+
+  personalLoading.value = true
+  personalError.value = ''
+
+  try {
+    const payload = {
+      file_key: selectedPersonalServerFile.value,
+      target_name: targetUserName.value,
+      use_stopwords: personalUseStopwords.value
+    }
+
+    const response = await axios.post(`${API_BASE}/local-json/personal-report`, payload, {
+      timeout: 300000
+    })
+
+    if (response.data.success && response.data.report) {
+      console.log('Personal report data:', response.data.report)
+      personalReport.value = {
+        ...response.data.report,
+        report_id: response.data.report_id,
+        report_url: response.data.report_url
+      }
+    } else {
+      console.error('Personal report generation failed:', response.data)
+      personalError.value = response.data.error || 'Failed to generate report'
+    }
+  } catch (err) {
+    console.error('Personal report generation failed:', err)
+    if (err.response?.data?.error) {
+      personalError.value = err.response.data.error
+    } else if (err.message.includes('timeout')) {
+      personalError.value = 'Request timed out. Please retry.'
+    } else {
+      personalError.value = 'Failed to generate report: ' + (err.message || 'Unknown error')
+    }
+  } finally {
+    personalLoading.value = false
+  }
+}
+
+watch(sourceMode, (mode) => {
+  if (mode === 'server') {
+    file.value = null
+    fetchServerFiles()
+  } else {
+    selectedServerFile.value = ''
+  }
+})
+
+watch(personalSourceMode, (mode) => {
+  if (mode === 'server') {
+    personalFile.value = null
+    fetchServerFiles()
+  } else {
+    selectedPersonalServerFile.value = ''
+  }
+})
+
+onMounted, watch } from 'vue'
 import Report from './Report.vue'
 import PersonalReport from './PersonalReport.vue'
 
@@ -497,10 +642,28 @@ const fetchAIFeatures = async () => {
   }
 }
 
-// 配置axios请求拦截器，自动添加CSRF token
+const fetchServerFiles = async () => {
+  serverFilesLoading.value = true
+  serverFilesError.value = ''
+  try {
+    const { data } = await axios.get(`${API_BASE}/local-json/files`)
+    serverFiles.value = data.files || []
+    if (!data.dir_exists) {
+      serverFilesError.value = 'Server directory not found. Check LOCAL_JSON_DIR.'
+    } else if (serverFiles.value.length === 0) {
+      serverFilesError.value = 'Server directory is empty. No JSON files found.'
+    }
+  } catch (err) {
+    serverFilesError.value = err?.response?.data?.error || 'Failed to load server file list.'
+  } finally {
+    serverFilesLoading.value = false
+  }
+}
+
+
+// Configure axios interceptors to attach CSRF token
 axios.interceptors.request.use(
   config => {
-    // 对所有非GET请求添加CSRF token
     if (config.method && !['get', 'head', 'options'].includes(config.method.toLowerCase())) {
       if (csrfToken) {
         config.headers['X-CSRF-Token'] = csrfToken
@@ -539,6 +702,11 @@ const loading = ref(false)
 const loadingMessage = ref('')
 const loadingReports = ref(false)
 const autoSelect = ref(false)  // 是否AI自动选词
+const sourceMode = ref('upload')
+const serverFiles = ref([])
+const serverFilesLoading = ref(false)
+const serverFilesError = ref('')
+const selectedServerFile = ref('')
 
 // 时间范围设置
 const startDate = ref('')
@@ -583,6 +751,8 @@ const targetUserName = ref('')
 const personalStartDate = ref('')
 const personalEndDate = ref('')
 const personalUseStopwords = ref(false)
+const personalSourceMode = ref('upload')
+const selectedPersonalServerFile = ref('')
 
 // 模板相关
 const availableTemplates = ref([])
@@ -673,6 +843,7 @@ const onFileChange = (e) => {
 // 重置状态
 const resetState = () => {
   file.value = null
+  selectedServerFile.value = ''
   currentReport.value = null
   selectedWords.value = []
   finalResult.value = {}
@@ -688,7 +859,8 @@ const calculateTimeout = (fileSize, useAI) => {
   const baseTimeout = 60
   
   // 文件大小因素: 每MB增加0.5秒
-  const fileSizeMB = fileSize / (1024 * 1024)
+  const safeFileSize = Number(fileSize) || 0
+  const fileSizeMB = safeFileSize / (1024 * 1024)
   const fileSizeTimeout = Math.ceil(fileSizeMB * 0.5)
   
   // AI因素: 使用AI额外增加90秒（选词+评论需要更多时间）
@@ -704,6 +876,34 @@ const calculateTimeout = (fileSize, useAI) => {
 }
 
 // 步骤1-3: 上传并分析
+const handleAnalyzeResponse = async (data) => {
+  console.log('Backend response:', data)
+  console.log('Auto-select mode:', autoSelect.value)
+  console.log('Has success field:', 'success' in data)
+  console.log('Stopwords enabled:', useStopwords.value)
+
+  if (autoSelect.value && data.success) {
+    console.log('Auto-select flow completed')
+    finalResult.value = data
+    try {
+      const detailRes = await axios.get(`${API_BASE}/reports/${data.report_id}`)
+      aiComments.value = detailRes.data.ai_comments || {}
+      showAIComments.value = true
+    } catch (e) {
+      console.error('Failed to load AI comments:', e)
+    }
+    step.value = 3
+  } else if (autoSelect.value && !data.success && !data.available_words) {
+    console.error('Auto-select response format invalid:', data)
+    alert('Auto-select failed. Please check backend logs or retry.')
+    step.value = 1
+  } else {
+    console.log('Entering manual selection flow')
+    currentReport.value = data
+    step.value = 2
+  }
+}
+
 const uploadAndAnalyze = async () => {
   if (!file.value) return
   loading.value = true
@@ -753,38 +953,7 @@ const uploadAndAnalyze = async () => {
     })
     
     if (data.error) throw new Error(data.error)
-    
-    // 调试日志
-    console.log('📦 后端返回数据:', data)
-    console.log('🤖 自动选词模式:', autoSelect.value)
-    console.log('✅ 返回数据包含success字段:', 'success' in data)
-    console.log('🛡️ 使用停用词库:', useStopwords.value)
-    
-    // AI自动模式：直接显示结果
-    // 检查返回数据是否包含 success 字段（自动选词模式）或 available_words 字段（手动选词模式）
-    if (autoSelect.value && data.success) {
-      console.log('✅ 进入自动选词完成流程')
-    finalResult.value = data
-    // 加载AI评论
-      try {
-        const detailRes = await axios.get(`${API_BASE}/reports/${data.report_id}`)
-        aiComments.value = detailRes.data.ai_comments || {}
-        showAIComments.value = true
-      } catch (e) {
-        console.error('加载AI评论失败:', e)
-      }
-      step.value = 3
-    } else if (autoSelect.value && !data.success && !data.available_words) {
-      // 如果选择了自动选词，但返回的数据格式不对，可能是后端错误
-      console.error('❌ 自动选词模式但返回数据格式异常:', data)
-      alert('自动选词失败，请检查后端日志或重试')
-      step.value = 1
-    } else {
-      // 手动模式：进入选词页面
-      console.log('📝 进入手动选词流程')
-      currentReport.value = data
-      step.value = 2
-    }
+    await handleAnalyzeResponse(data)
   } catch (err) {
     const respErr = err?.response?.data?.error
     const msg = respErr ? `分析失败: ${respErr}` : `分析失败: ${err.message || '未知错误'}`
@@ -796,6 +965,60 @@ const uploadAndAnalyze = async () => {
 }
 
 // 词汇选择
+const analyzeServerFile = async () => {
+  if (!selectedServerFile.value) return
+  loading.value = true
+
+  const fileMeta = serverFiles.value.find(item => item.path === selectedServerFile.value)
+  const timeoutMs = calculateTimeout(fileMeta?.size || 0, autoSelect.value)
+  const timeoutSeconds = Math.ceil(timeoutMs / 1000)
+
+  if (autoSelect.value) {
+    if (aiFeatures.value.ai_word_selection_enabled && aiFeatures.value.ai_comment_enabled) {
+      loadingMessage.value = `Analyzing server file, AI will auto-select words and generate report (AI comments)...
+(Estimated up to ${timeoutSeconds} seconds)`
+    } else if (aiFeatures.value.ai_word_selection_enabled) {
+      loadingMessage.value = `Analyzing server file, AI will auto-select words and generate report...
+(Estimated up to ${timeoutSeconds} seconds)`
+    } else if (aiFeatures.value.ai_comment_enabled) {
+      loadingMessage.value = `Analyzing server file, auto-selecting top 10 words (AI comments)...
+(Estimated up to ${timeoutSeconds} seconds)`
+    } else {
+      loadingMessage.value = `Analyzing server file, auto-selecting top 10 words...
+(Estimated up to ${timeoutSeconds} seconds)`
+    }
+  } else {
+    loadingMessage.value = `Analyzing server file...
+(Estimated up to ${timeoutSeconds} seconds)`
+  }
+
+  try {
+    const payload = {
+      file_key: selectedServerFile.value,
+      auto_select: autoSelect.value,
+      use_stopwords: useStopwords.value
+    }
+
+    if (startDate.value) payload.start_date = startDate.value
+    if (endDate.value) payload.end_date = endDate.value
+
+    const { data } = await axios.post(`${API_BASE}/local-json/analyze`, payload, {
+      timeout: timeoutMs
+    })
+
+    if (data.error) throw new Error(data.error)
+
+    await handleAnalyzeResponse(data)
+  } catch (err) {
+    const respErr = err?.response?.data?.error
+    const msg = respErr ? `Analysis failed: ${respErr}` : `Analysis failed: ${err.message || 'Unknown error'}`
+    alert(msg)
+  } finally {
+    loading.value = false
+    loadingMessage.value = ''
+  }
+}
+
 const isWordSelected = (word) => {
   return selectedWords.value.includes(word)
 }
@@ -955,6 +1178,17 @@ const formatDate = (dateStr) => {
 
 // 页面加载时初始化
 // 个人报告相关方法
+const formatFileSize = (bytes) => {
+  const size = Number(bytes) || 0
+  if (size < 1024) return `${size} B`
+  const kb = size / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  const gb = mb / 1024
+  return `${gb.toFixed(1)} GB`
+}
+
 const openPersonalReport = (reportId) => {
   // 如果传入了reportId，使用传入的值；否则使用当前生成的报告ID
   const id = reportId || personalReport.value?.report_id
@@ -1143,6 +1377,93 @@ onMounted(async () => {
   margin-bottom: 4px;
   color: #1d1d1f;
   font-weight: 600;
+}
+
+.source-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.source-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 20px;
+  border: 2px solid #e5e5e7;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: white;
+  position: relative;
+}
+
+.source-option:hover {
+  border-color: #007aff;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.1);
+}
+
+.source-option input[type="radio"] {
+  margin-right: 12px;
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  accent-color: #007aff;
+}
+
+.source-option input[type="radio"]:checked ~ .source-content {
+  color: #007aff;
+}
+
+.source-option:has(input[type="radio"]:checked) {
+  border-color: #007aff;
+  background: #f0f7ff;
+}
+
+.source-content {
+  flex: 1;
+}
+
+.source-content p {
+  margin: 8px 0 0 0;
+  font-size: 14px;
+  color: #6e6e73;
+  line-height: 1.5;
+}
+
+.source-content strong {
+  font-size: 15px;
+  display: block;
+  margin-bottom: 4px;
+  color: #1d1d1f;
+  font-weight: 600;
+}
+
+.server-file-select {
+  flex: 1;
+  min-width: 240px;
+  padding: 10px 14px;
+  border: 2px solid #e5e5e7;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #1d1d1f;
+  background: white;
+  transition: all 0.2s ease;
+}
+
+.server-file-select:focus {
+  outline: none;
+  border-color: #007aff;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+}
+
+.file-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #6e6e73;
 }
 
 /* 进度信息 */

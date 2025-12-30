@@ -12,6 +12,7 @@ services:
       - ENABLE_IMAGE_EXPORT=true
       - ALLOWED_ORIGINS=http://localhost:5001,http://localhost:5173,http://localhost:5000
       - FRONTEND_URL=http://localhost:5000
+      - LOCAL_JSON_DIR=/app/local_json
       # 如果需要 OpenAI，取消下面的注释并设置
       # - OPENAI_API_KEY=your-api-key
       # - OPENAI_BASE_URL=https://api.openai.com/v1
@@ -19,6 +20,8 @@ services:
     volumes:
       # 持久化运行时输出（可选）
       - ./runtime_outputs:/app/runtime_outputs
+      # 服务器本地 JSON 目录（用于前端选择服务器文件分析）
+      - ./local_json:/app/local_json
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')"]

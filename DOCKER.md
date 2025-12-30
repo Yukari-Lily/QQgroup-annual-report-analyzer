@@ -47,6 +47,7 @@ docker run -d \
   --name qqgroup-report \
   -p 5000:5000 \
   -v $(pwd)/runtime_outputs:/app/runtime_outputs \
+  -v $(pwd)/local_json:/app/local_json \
   qqgroup-report-analyzer
 ```
 
@@ -78,6 +79,7 @@ environment:
   - ENABLE_IMAGE_EXPORT=true
   - MAX_UPLOAD_SIZE_MB=50
   - STORAGE_MODE=json  # 或 mysql
+  - LOCAL_JSON_DIR=/app/local_json
   - OPENAI_API_KEY=your-api-key  # 可选
   - OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
   - OPENAI_MODEL=gpt-4o-mini  # 可选
@@ -90,6 +92,7 @@ docker run -d \
   --name qqgroup-report \
   -p 5000:5000 \
   -e ENABLE_IMAGE_EXPORT=true \
+  -e LOCAL_JSON_DIR=/app/local_json \
   -e OPENAI_API_KEY=your-api-key \
   qqgroup-report-analyzer
 ```
@@ -110,6 +113,7 @@ docker run -d \
 ```yaml
 volumes:
   - ./runtime_outputs:/app/runtime_outputs
+  - ./local_json:/app/local_json
   - mysql_data:/var/lib/mysql  # MySQL 数据持久化
 ```
 

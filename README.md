@@ -100,11 +100,17 @@ mac默认可能5000端口被占用的话换一个端口
 # 构建并启动
 docker-compose up -d --build
 
+
+
+
 # 查看日志
 docker-compose logs -f
 
 # 访问 http://localhost:5001
 ```
+
+Note: To analyze existing JSON files on the server without uploading, mount a folder as `./local_json` in Docker and keep `LOCAL_JSON_DIR=/app/local_json`. The frontend will show a server file picker.
+
 
 ### ✅ 第3步：访问应用
 

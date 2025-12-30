@@ -50,11 +50,9 @@ RUN apt-get update && apt-get install -y \
 
 # 复制后端依赖文件
 COPY backend/requirements.txt ./
-COPY requirements.txt ./root_requirements.txt
 
 # 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r root_requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 安装 Playwright 浏览器
 RUN playwright install chromium && \

@@ -13,6 +13,7 @@ import uuid
 import base64
 import requests
 import asyncio
+from pathlib import Path
 from typing import List, Dict
 from io import BytesIO
 
@@ -87,6 +88,8 @@ SECURITY_HEADER_HSTS = os.getenv('SECURITY_HEADER_HSTS', '')
 
 # 文件验证配置
 ALLOWED_FILE_EXTENSIONS = os.getenv('ALLOWED_FILE_EXTENSIONS', 'json').split(',')
+LOCAL_JSON_DIR = os.getenv('LOCAL_JSON_DIR', os.path.join(PROJECT_ROOT, "local_json"))
+LOCAL_JSON_DIR = os.path.abspath(LOCAL_JSON_DIR)
 
 logger.info(f"{'='*60}")
 logger.info(f"🔒 安全配置状态")
@@ -285,6 +288,285 @@ def allowed_file(filename):
     return ext in ALLOWED_FILE_EXTENSIONS
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return False
+
+
+def get_local_json_base_dir() -> Path:
+    return Path(LOCAL_JSON_DIR).resolve()
+
+
+def list_local_json_files():
+    base_dir = get_local_json_base_dir()
+    if not base_dir.exists():
+        return [], False
+
+    files = []
+    for file_path in base_dir.rglob("*"):
+        if not file_path.is_file() or not allowed_file(file_path.name):
+            continue
+        try:
+            rel_path = file_path.relative_to(base_dir).as_posix()
+        except ValueError:
+            continue
+        stat = file_path.stat()
+        files.append({
+            "path": rel_path,
+            "name": file_path.name,
+            "size": stat.st_size
+        })
+
+    files.sort(key=lambda item: item["path"].lower())
+    return files, True
+
+
+def resolve_local_json_path(file_key: str):
+    if not file_key:
+        return None
+    base_dir = get_local_json_base_dir()
+    rel_path = Path(file_key)
+    if rel_path.is_absolute():
+        return None
+    resolved_path = (base_dir / rel_path).resolve()
+    try:
+        resolved_path.relative_to(base_dir)
+    except ValueError:
+        return None
+    if not resolved_path.exists() or not resolved_path.is_file():
+        return None
+    if not allowed_file(resolved_path.name):
+        return None
+    return resolved_path
+
+
+def analyze_chat_file(
+    source_path: str,
+    report_id: str,
+    auto_select: bool,
+    use_stopwords: bool,
+    user_id: str,
+    start_date: str = None,
+    end_date: str = None,
+    cleanup_source: bool = False
+):
+    if start_date:
+        config.MESSAGE_START_DATE = start_date
+        logger.info(f"Set message start date filter: {start_date}")
+    else:
+        config.MESSAGE_START_DATE = None
+
+    if end_date:
+        config.MESSAGE_END_DATE = end_date
+        logger.info(f"Set message end date filter: {end_date}")
+    else:
+        config.MESSAGE_END_DATE = None
+
+    try:
+        # Stream JSON to avoid memory spikes.
+        data = load_json(source_path)
+        analyzer = analyzer_mod.ChatAnalyzer(data, use_stopwords=use_stopwords)
+        analyzer.analyze()
+        report = analyzer.export_json()
+
+        all_words = report.get('topWords', [])[:100]
+
+        if len(all_words) == 0:
+            logger.error("No keywords found in analysis result.")
+            if cleanup_source:
+                cleanup_temp_files(source_path)
+            return jsonify({"error": "No keywords found in analysis result. Check the JSON file."}), 500
+
+        if auto_select:
+            logger.info("Auto-select mode enabled.")
+            if AI_WORD_SELECTION_ENABLED:
+                logger.info("AI word selection enabled.")
+                ai_selector = AIWordSelector()
+
+                if ai_selector.client:
+                    selected_word_objects = ai_selector.select_words(all_words, top_n=200)
+
+                    if selected_word_objects:
+                        selected_word_objects_sorted = sorted(
+                            selected_word_objects,
+                            key=lambda w: w['freq'],
+                            reverse=True
+                        )
+                        selected_words = [w['word'] for w in selected_word_objects_sorted[:10]]
+                        if len(selected_words) < 10:
+                            logger.warning(
+                                "AI selected fewer than 10 words; falling back to top 10."
+                            )
+                            selected_words = [w['word'] for w in all_words[:10]]
+                        logger.info(f"AI selected words: {', '.join(selected_words)}")
+                    else:
+                        logger.warning("AI selection failed; using top 10 words.")
+                        selected_words = [w['word'] for w in all_words[:10]]
+                else:
+                    logger.warning("AI client not available; using top 10 words.")
+                    selected_words = [w['word'] for w in all_words[:10]]
+            else:
+                logger.info("AI selection disabled; using top 10 words.")
+                if len(all_words) < 10:
+                    logger.warning(
+                        f"Only {len(all_words)} words available; fewer than 10."
+                    )
+                selected_words = [w['word'] for w in all_words[:10]]
+                if len(selected_words) < 10:
+                    logger.error("Not enough words to generate report.")
+                    raise ValueError("Not enough words to generate report.")
+
+            logger.info(
+                "Finalizing report with %s selected words...",
+                len(selected_words)
+            )
+            result = finalize_report(
+                report_id=report_id,
+                analyzer=None,
+                selected_words=selected_words,
+                auto_mode=True,
+                report_data=report,
+                user_id=user_id
+            )
+            logger.info(
+                "Auto-select report generated. Response: %s",
+                result.get_json() if hasattr(result, 'get_json') else result
+            )
+            if cleanup_source:
+                cleanup_temp_files(source_path)
+            return result
+
+        base_dir = os.path.join(PROJECT_ROOT, "runtime_outputs")
+        temp_dir = os.path.join(base_dir, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        result_temp_path = os.path.join(temp_dir, f"{report_id}_result.json")
+        with open(result_temp_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+
+        return jsonify({
+            "report_id": report_id,
+            "chat_name": report.get('chatName', 'Unknown chat'),
+            "message_count": report.get('messageCount', 0),
+            "available_words": all_words,
+            "stopwords_enabled": use_stopwords
+        })
+    except Exception as exc:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"analyze_chat_file failed: {exc}")
+        logger.error(f"Traceback:\n{error_trace}")
+        traceback.print_exc()
+        if cleanup_source:
+            cleanup_temp_files(source_path)
+        return jsonify({"error": f"Analysis failed: {exc}"}), 500
+
+
+@app.route("/api/local-json/files", methods=["GET"])
+@limiter.limit(RATE_LIMIT_LIST_REPORTS if SECURITY_ENABLED and RATE_LIMIT_LIST_REPORTS else "1000000 per hour")
+def list_local_json_files_api():
+    files, dir_exists = list_local_json_files()
+    return jsonify({
+        "files": files,
+        "dir_exists": dir_exists
+    })
+
+
+@app.route("/api/local-json/analyze", methods=["POST"])
+@limiter.limit(RATE_LIMIT_UPLOAD if SECURITY_ENABLED and RATE_LIMIT_UPLOAD else "1000000 per hour")
+def analyze_local_json_file():
+    if not db_service:
+        return jsonify({"error": "Database service not initialized."}), 500
+
+    data = request.get_json() or {}
+    file_key = (data.get("file_key") or "").strip()
+    if not file_key:
+        return jsonify({"error": "Local file is required."}), 400
+
+    source_path = resolve_local_json_path(file_key)
+    if not source_path:
+        return jsonify({"error": "File not found or path is unsafe."}), 400
+
+    auto_select = parse_bool(data.get("auto_select", False))
+    use_stopwords = parse_bool(data.get("use_stopwords", False))
+    start_date = data.get("start_date") or None
+    end_date = data.get("end_date") or None
+
+    report_id = str(uuid.uuid4())
+
+    logger.info(f"{'='*60}")
+    logger.info(f"Local JSON analyze request | Report ID: {report_id}")
+    logger.debug(f"File key: {file_key}")
+    logger.debug(f"AI auto-select: {auto_select}")
+    logger.debug(f"Remote address: {request.remote_addr}")
+    logger.debug(f"User-Agent: {request.headers.get('User-Agent', 'unknown')}")
+    logger.info(f"{'='*60}\n")
+
+    return analyze_chat_file(
+        source_path=str(source_path),
+        report_id=report_id,
+        auto_select=auto_select,
+        use_stopwords=use_stopwords,
+        user_id=get_or_create_user_id(),
+        start_date=start_date,
+        end_date=end_date,
+        cleanup_source=False
+    )
+
+
+@app.route("/api/local-json/personal-report", methods=["POST"])
+@limiter.limit(RATE_LIMIT_UPLOAD if SECURITY_ENABLED and RATE_LIMIT_UPLOAD else "1000000 per hour")
+def generate_personal_report_from_local():
+    data = request.get_json() or {}
+    file_key = (data.get("file_key") or "").strip()
+    if not file_key:
+        return jsonify({"error": "Local file is required."}), 400
+
+    target_name = (data.get("target_name") or "").strip()
+    if not target_name:
+        return jsonify({"error": "Target user name is required."}), 400
+
+    source_path = resolve_local_json_path(file_key)
+    if not source_path:
+        return jsonify({"error": "File not found or path is unsafe."}), 400
+
+    use_stopwords = parse_bool(data.get("use_stopwords", False))
+    report_id = str(uuid.uuid4())
+
+    try:
+        data = load_json(str(source_path))
+        analyzer = PersonalAnalyzer(data, target_name, use_stopwords=use_stopwords)
+        analyzer.analyze()
+        report = analyzer.export_json()
+
+        if db_service:
+            success = db_service.create_personal_report(
+                report_id=report_id,
+                user_name=report.get('user_name', target_name),
+                chat_name=report.get('chat_name', 'Unknown chat'),
+                report_data=report,
+                user_id=get_or_create_user_id()
+            )
+            if not success:
+                logger.warning("Personal report saved failed; returning report anyway.")
+
+        return jsonify({
+            "success": True,
+            "report_id": report_id,
+            "report": report,
+            "report_url": f"/personal-report/{report_id}"
+        })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error(f"Personal report from local file failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Analysis failed: {exc}"}), 500
+
+
 @app.route("/api/upload", methods=["POST"])
 @limiter.limit(RATE_LIMIT_UPLOAD if SECURITY_ENABLED and RATE_LIMIT_UPLOAD else "1000000 per hour")
 def upload_and_analyze():
@@ -319,17 +601,7 @@ def upload_and_analyze():
     start_date = request.form.get('start_date')
     end_date = request.form.get('end_date')
 
-    if start_date:
-        config.MESSAGE_START_DATE = start_date
-        logger.info(f"设置消息开始时间过滤：{start_date}")
-    else:
-        config.MESSAGE_START_DATE = None
-
-    if end_date:
-        config.MESSAGE_END_DATE = end_date
-        logger.info(f"设置消息结束时间过滤：{end_date}")
-    else:
-        config.MESSAGE_END_DATE = None
+    # 日期过滤在通用分析函数中处理
 
     report_id = str(uuid.uuid4())
 
@@ -351,93 +623,17 @@ def upload_and_analyze():
     temp_path = os.path.join(temp_dir, f"{report_id}.json")
     file.save(temp_path)
 
-    try:
-        # 使用流式解析加载JSON（避免内存溢出）
-        data = load_json(temp_path)
-        analyzer = analyzer_mod.ChatAnalyzer(data, use_stopwords=use_stopwords)
-        analyzer.analyze()
-        report = analyzer.export_json()
 
-        all_words = report.get('topWords', [])[:100]
-
-        # 确保有足够的词汇
-        if len(all_words) == 0:
-            logger.error("❌ 分析结果中没有找到任何热词")
-            cleanup_temp_files(temp_path)
-            return jsonify({"error": "分析结果中没有找到热词，请检查聊天记录文件"}), 500
-
-        if auto_select:
-            logger.info("✅ 进入自动选词模式")
-            # 自动选词模式：根据AI功能是否开启选择不同的选词方式
-            if AI_WORD_SELECTION_ENABLED:
-                logger.info("🤖 启动AI智能选词...")
-                ai_selector = AIWordSelector()
-
-                if ai_selector.client:
-                    selected_word_objects = ai_selector.select_words(all_words, top_n=200)
-
-                    if selected_word_objects:
-                        # 按词频从高到低排序
-                        selected_word_objects_sorted = sorted(
-                            selected_word_objects,
-                            key=lambda w: w['freq'],
-                            reverse=True
-                        )
-                        selected_words = [w['word'] for w in selected_word_objects_sorted[:10]]
-                        # 如果AI选词少于10个，用前10个热词补齐
-                        if len(selected_words) < 10:
-                            logger.warning(f"AI选词只有{len(selected_words)}个，用前10个热词补齐")
-                            selected_words = [w['word'] for w in all_words[:10]]
-                        logger.info(f"✅ AI选词成功（已按词频排序）: {', '.join(selected_words)}")
-                    else:
-                        logger.warning("AI选词失败，使用前10个热词")
-                        selected_words = [w['word'] for w in all_words[:10]]
-                else:
-                    logger.warning("OpenAI未配置或客户端未就绪，使用前10个热词")
-                    selected_words = [w['word'] for w in all_words[:10]]
-            else:
-                # AI功能未开启，直接使用前10个热词
-                logger.info("📋 使用默认前10个热词（AI功能未开启）")
-                if len(all_words) < 10:
-                    logger.warning(f"可用词汇只有{len(all_words)}个，少于10个")
-                selected_words = [w['word'] for w in all_words[:10]]
-                if len(selected_words) < 10:
-                    logger.error(f"无法选择10个词，只有{len(selected_words)}个可用词汇")
-                    raise ValueError(f"可用词汇不足10个，无法生成报告")
-
-            user_id = get_or_create_user_id()
-            logger.info(f"📝 准备生成报告，已选择{len(selected_words)}个词: {', '.join(selected_words[:5])}...")
-            result = finalize_report(
-                report_id=report_id,
-                analyzer=None,  
-                selected_words=selected_words,
-                auto_mode=True,
-                report_data=report,
-                user_id=user_id
-            )
-            logger.info(f"✅ 自动选词模式报告生成完成，返回结果: {result.get_json() if hasattr(result, 'get_json') else result}")
-            cleanup_temp_files(temp_path)
-            return result
-        else:
-            result_temp_path = os.path.join(temp_dir, f"{report_id}_result.json")
-            with open(result_temp_path, 'w', encoding='utf-8') as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-
-            return jsonify({
-                "report_id": report_id,
-                "chat_name": report.get('chatName', '未知群聊'),
-                "message_count": report.get('messageCount', 0),
-                "available_words": all_words,
-                "stopwords_enabled": use_stopwords
-            })
-    except Exception as exc:
-        import traceback
-        error_trace = traceback.format_exc()
-        logger.error(f"❌ upload_and_analyze失败: {exc}")
-        logger.error(f"错误堆栈:\n{error_trace}")
-        traceback.print_exc()
-        cleanup_temp_files(temp_path)
-        return jsonify({"error": f"分析失败: {exc}"}), 500
+    return analyze_chat_file(
+        source_path=temp_path,
+        report_id=report_id,
+        auto_select=auto_select,
+        use_stopwords=use_stopwords,
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        cleanup_source=True
+    )
 
 
 @app.route("/api/personal-report", methods=["POST"])
